@@ -1,0 +1,10 @@
+# Private, per-install data: never commit
+.env
+recordings/
+.runtime/
+work/
+artifacts/
+# Your edited copy of Claude's prompt (the tracked default is prompts/conversation.default.md)
+prompts/conversation.md
+node_modules/
+.DS_Store

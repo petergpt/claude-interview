@@ -1,0 +1,19 @@
+{
+  "name": "claude-interview",
+  "version": "0.1.0",
+  "description": "A hands-free, recorded video-call conversation with Claude: Claude Code for the thinking, ElevenLabs for voice and transcription, and a generated visual room.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": ["claude", "claude-code", "voice", "conversation", "elevenlabs", "recording"],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.mjs",
+    "doctor": "node --env-file-if-exists=.env scripts/doctor.mjs",
+    "login": "node scripts/login.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "review": "node --env-file-if-exists=.env scripts/review.mjs",
+    "interview": "node --env-file-if-exists=.env scripts/cli.mjs"
+  }
+}
