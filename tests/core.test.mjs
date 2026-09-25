@@ -66,3 +66,14 @@ test('API-key mode passes only ANTHROPIC_API_KEY through; gateway overrides are 
   assert.deepEqual(subscriptionEnvironment(source),{PATH:'/bin',ANTHROPIC_API_KEY:'sk-ant-test'});
   assert.deepEqual(subscriptionEnvironment({...source,INTERVIEW_CLAUDE_AUTH:''}),{PATH:'/bin'});
 });
+test('images switch Claude to streaming input: one JSON user message with labelled image blocks, then the prompt',async()=>{
+  let args,stdin='';const result=await runVerifiedClaude({prompt:'{"conversation":[]}',system:'test',images:[{data:'AAAA',label:'Frame 1'}],
+    spawnProcess:(bin,a)=>{args=a;const c=childFor([{type:'stream_event',event:{delta:{type:'text_delta',text:'I see it.'}}},{type:'result',result:'I see it.',is_error:false}]);c.stdin.on('data',d=>stdin+=d);return c;}});
+  assert.equal(args[args.indexOf('--input-format')+1],'stream-json');
+  const msg=JSON.parse(stdin);assert.equal(msg.type,'user');assert.equal(msg.message.role,'user');
+  assert.deepEqual(msg.message.content.map(b=>b.type),['text','image','text']);
+  assert.equal(msg.message.content[1].source.media_type,'image/jpeg');assert.equal(msg.message.content[2].text,'{"conversation":[]}');
+  assert.equal(result.text,'I see it.');
+  let plainArgs;await runVerifiedClaude({prompt:'hi',system:'t',spawnProcess:(b,a)=>{plainArgs=a;return childFor([{type:'result',result:'ok',is_error:false}]);}});
+  assert.ok(!plainArgs.includes('--input-format'),'calls without images are unchanged');
+});

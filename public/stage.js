@@ -53,9 +53,11 @@ export class Stage {
     this.interruptedAt = -1e9;
     // Smoothed drawing state.
     this.s = { think: 0, listen: 0, listenState: 0, speak: 0, alive: 0, captions: 1, userRing: 0, rot: 0, scene: 0, bespoke: 0, mouth: { open: 0, round: 0 } };
-    this.style = 'clawd'; this.mood = null; this.mouthTarget = { open: 0, round: 0 };
-    // Scene layer: a library scene appears first, then the bespoke bitmap stream crossfades over it.
-    this.scene = null; this.sceneHidden = false;
+    this.style = 'cafe'; this.mood = null; this.mouthTarget = { open: 0, round: 0 };
+    // Scene layer: a new picture (a quick sketch, then its finished version) waits as `pending` until its first frame has
+    // drawn; only then does it switch the screen on or crossfade over what is showing. A library scene stands in only
+    // when a sketch fails and nothing is on screen.
+    this.scene = null; this.pending = null; this.fade = null; this.sceneHidden = false;
     this.background = 'off';                 // The user's background: off | blur | match (the conversation's world)
     const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
     this.person = mk(TILE_W, 968); this.soft = mk(Math.round(TILE_W / 5), Math.round(968 / 5));
@@ -67,11 +69,31 @@ export class Stage {
   }
   interrupted() { this.interruptedAt = performance.now(); }
   setMood(name) { this.mood = { name, at: performance.now() }; }
+  // A click on Claude: a giggle or a start; poked too often in a short while, it gets fed up.
+  poke() {
+    const now = performance.now(); this.pokes = (this.pokes || []).filter(p => now - p < 6000); this.pokes.push(now);
+    this.setMood(this.pokes.length >= 4 ? 'fed up' : ['giggle', 'surprised', 'giggle', 'delight'][Math.floor(Math.random() * 4)]);
+  }
+  // Is a canvas point inside Claude's tile? (for pokes)
+  hitClaude(px, py) { const x = M + TILE_W + GAP; return px >= x && px <= x + TILE_W && py >= M && py <= M + 968; }
   backchannel() { this.nodAt = performance.now() / 1000; }
-  sceneBase(h) { this.scene?.bitmap?.close(); this.scene = { id: h.scene_id, base: h, t0: performance.now(), bitmap: null, sketching: true, leaving: false }; this.s.bespoke = 0; }
-  sceneBitmap(id, bitmap) { if (this.scene?.id !== id) { bitmap.close(); return; } this.scene.bitmap?.close(); this.scene.bitmap = bitmap; this.scene.sketching = false; }
-  sceneDone(id) { if (this.scene?.id === id) this.scene.sketching = false; }
-  sceneClear() { if (this.scene) this.scene.leaving = true; }
+  sceneBase(h) { this.pending = h; }                                          // shown once its first frame has drawn
+  sceneStandIn(id) {
+    if (this.pending?.scene_id !== id) return;
+    if (!this.scene || this.scene.leaving) { this.scene?.bitmap?.close(); this.scene = { id, base: this.pending, t0: performance.now(), bitmap: null, sketching: true, leaving: false }; this.s.bespoke = 0; this.glanceAt = performance.now() + 500; }
+    this.pending = null;
+  }
+  sceneBitmap(id, bitmap) {
+    if (this.pending?.scene_id === id) {
+      this.fade?.bitmap?.close(); this.fade = { bitmap: this.scene?.bitmap || null, base: this.scene?.bitmap ? null : this.scene?.base, t0: this.scene?.t0, at: performance.now() };
+      if (!this.pending.refine) this.glanceAt = performance.now();                 // a new picture draws a glance; its finished version doesn't
+      this.scene = { id, base: this.pending, t0: performance.now(), bitmap, sketching: false, leaving: false }; this.pending = null; this.s.bespoke = 1; return;
+    }
+    if (this.scene?.id !== id) { bitmap.close(); return; }
+    this.scene.bitmap?.close(); this.scene.bitmap = bitmap; this.scene.sketching = false;
+  }
+  sceneDone(id) { if (this.scene?.id === id) this.scene.sketching = false; if (this.pending?.scene_id === id) this.pending = null; }
+  sceneClear() { if (this.scene) this.scene.leaving = true; this.pending = null; }
   backdropBitmap(id, bitmap) { if (this.backdrop?.id !== id) { this.backdrop?.bitmap?.close(); this.backdrop = { id, bitmap: null, at: performance.now() }; } this.backdrop.bitmap?.close(); this.backdrop.bitmap = bitmap; }
   backdropClear() { this.backdrop?.bitmap?.close(); this.backdrop = null; }
   caption(who, text) { this.captions[who] = { text, at: performance.now() }; }
@@ -179,52 +201,61 @@ export class Stage {
     ctx.restore();
   }
 
+  // Claude's tile, laid out like a talk-show set. Claude is the host and stays large. When a picture is up, Claude
+  // eases to the left and the picture plays on a screen mounted on the wall behind (for looks with their own set,
+  // such as Café) or on a screen in front (for the rest). Claude glances at the screen when a new picture appears.
   drawClaude(x, y, w, h, t, now) {
-    const { ctx, s } = this, st = STYLES[this.style] || STYLES.clawd, sc = this.scene, mix = ease(clamp(s.scene));
+    const { ctx, s } = this, st = STYLES[this.style] || STYLES.clawd, mix = ease(clamp(s.scene));
     ctx.save(); roundRect(ctx, x, y, w, h, 28); ctx.clip();
     ctx.fillStyle = st.paper; ctx.fillRect(x, y, w, h);
     if (st.grain) { this.pattern ||= ctx.createPattern(this.grain, 'repeat'); ctx.fillStyle = this.pattern; ctx.fillRect(x, y, w, h); }
-    const since = now - this.interruptedAt;
+    const since = now - this.interruptedAt, sinceGlance = now - (this.glanceAt ?? -1e9), glance = sinceGlance >= 0 && sinceGlance < 1700 && mix > 0.5;
     const a = { t, think: ease(clamp(s.think)), listen: s.listen, listenState: s.listenState, speak: s.speak, alive: s.alive, rot: s.rot,
-      gap: since < 900 ? 0.09 * (1 - since / 900) ** 2 : 0, mouth: s.mouth, dt: this.dt, nod: this.nodAt, mood: this.mood && { name: this.mood.name, age: (now - this.mood.at) / 1000 } };
-    const cam = { cx: x + 128, cy: y + h - 128, r: 96 };            // Claude's cameo while a scene is up
-    if (sc && mix > 0.001) {
-      ctx.save();
-      if (mix < 0.999) {
-        // the scene spreads out from Claude like ink bleeding into paper
-        const R = mix * Math.hypot(w, h) * 1.08, P = new Path2D();
-        for (let i = 0; i <= 64; i++) { const an = i / 64 * Math.PI * 2, wob = 1 + 0.07 * Math.sin(an * 5 + t * 2) + 0.05 * Math.sin(an * 11 - t * 3); P.lineTo(cam.cx + Math.cos(an) * R * wob, cam.cy + Math.sin(an) * R * wob); }
-        ctx.clip(P);
-      }
-      const L = this.layer, lx = L.getContext('2d'), box = { x: 0, y: 0, w, h };
-      lx.clearRect(0, 0, L.width, L.height);
-      if (s.bespoke < 0.999) drawBaseScene(lx, sc.base, box, (now - sc.t0) / 1000, st, s.speak);
-      ctx.globalAlpha = 1 - ease(s.bespoke); ctx.drawImage(L, 0, 0, w, h, x, y, w, h);
-      if (sc.bitmap) {
-        const k = Math.max(w / sc.bitmap.width, h / sc.bitmap.height), bw = sc.bitmap.width * k, bh = sc.bitmap.height * k;
-        ctx.globalAlpha = ease(s.bespoke); ctx.drawImage(sc.bitmap, x + (w - bw) / 2, y + (h - bh) / 2, bw, bh);
-      }
-      ctx.restore();
-    }
+      gap: since < 900 ? 0.09 * (1 - since / 900) ** 2 : 0, mouth: s.mouth, dt: this.dt, nod: this.nodAt, mood: this.mood && { name: this.mood.name, age: (now - this.mood.at) / 1000 },
+      // a glance up at the screen when a new picture appears; outside a turn, the eyes follow the cursor
+      pointer: glance ? { x: 0.95, y: -0.55 } : this.pointer && now - this.pointer.at < 2500 && !['listening', 'thinking', 'speaking'].includes(this.claude)
+        ? { x: (this.pointer.x - (x + w / 2)) / (w * 0.7), y: (this.pointer.y - (y + h * 0.36)) / (h * 0.7) } : null };
     // switching looks crossfades over 0.7 s instead of cutting
     if (this.style !== this.shownStyle) { this.prevStyle = this.shownStyle; this.shownStyle = this.style; this.styleAt = now; }
     const sw = this.prevStyle ? clamp((now - this.styleAt) / 700) : 1; if (sw >= 1) this.prevStyle = null;
-    if (mix < 0.999) {
-      if (this.prevStyle) drawAvatar(ctx, this.prevStyle, { x, y, w, h }, { ...a, alive: a.alive * (1 - mix) * (1 - ease(sw)) });
-      drawAvatar(ctx, this.style, { x, y, w, h }, { ...a, alive: a.alive * (1 - mix) * (this.prevStyle ? ease(sw) : 1) });
-    }
-    if (mix > 0.001) {
-      // Claude stays present in a round cameo, with a soft shadow and a thin ring in its own colour
-      ctx.save(); ctx.globalAlpha = mix;
-      ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 24; ctx.shadowOffsetY = 8;
-      ctx.fillStyle = st.paper; ctx.beginPath(); ctx.arc(cam.cx, cam.cy, cam.r * (0.85 + 0.15 * mix), 0, Math.PI * 2); ctx.fill();
-      ctx.shadowColor = 'transparent'; ctx.clip();
-      drawAvatar(ctx, this.style, { x: cam.cx - cam.r * 1.25, y: cam.cy - cam.r * 1.05, w: cam.r * 2.5, h: cam.r * 2.1 }, { ...a, mini: true, alive: a.alive * mix });
-      ctx.restore();
-      ctx.save(); ctx.globalAlpha = mix * 0.8; ctx.strokeStyle = st.ink; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(cam.cx, cam.cy, cam.r * (0.85 + 0.15 * mix), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    if (mix < 0.001) {
+      if (this.prevStyle) drawAvatar(ctx, this.prevStyle, { x, y, w, h }, { ...a, alive: a.alive * (1 - ease(sw)) });
+      drawAvatar(ctx, this.style, { x, y, w, h }, { ...a, alive: a.alive * (this.prevStyle ? ease(sw) : 1) });
+    } else {
+      const S = 1 - 0.12 * mix, host = { x: x + w / 2 - (w * S) / 2 - 0.2 * w * mix, y: y + h - h * S, w: w * S, h: h * S };
+      const mw = w * 0.5, mh = mw * 560 / 888, screen = { x: x + w - mw - w * 0.03, y: y + h * 0.035, w: mw, h: mh };
+      if (st.set) { st.set(ctx, { x, y, w, h }, t); this.drawScreen(screen, mix, t, now, st); drawAvatar(ctx, this.style, host, { ...a, noSet: true }); }
+      else { ctx.drawImage(worldBackdrop(this.style, Math.round(w), Math.round(h)), x, y, w, h); drawAvatar(ctx, this.style, host, a); this.drawScreen(screen, mix, t, now, st); }
     }
     ctx.restore();
+  }
 
+  // The set's screen: a dark bezel with a soft shadow and glass glare. It switches on like a TV (a bright line opening
+  // out from the middle) and shows the current picture, crossfading from the previous one.
+  drawScreen(r, mix, t, now, st) {
+    const { ctx, s } = this, sc = this.scene, on = clamp(mix * 1.5), B = 9;
+    ctx.save(); ctx.globalAlpha = clamp(mix * 2);
+    ctx.shadowColor = 'rgba(20,10,5,0.45)'; ctx.shadowBlur = 30; ctx.shadowOffsetY = 12;
+    roundRect(ctx, r.x - B, r.y - B, r.w + 2 * B, r.h + 2 * B, 14); ctx.fillStyle = '#1d1916'; ctx.fill(); ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = 'rgba(255,236,210,0.16)'; ctx.lineWidth = 1.5; ctx.stroke();
+    roundRect(ctx, r.x, r.y, r.w, r.h, 6); ctx.fillStyle = '#0d0b0a'; ctx.fill(); ctx.clip();
+    const open = ease(on), ch = r.h * open, cy = r.y + r.h / 2;
+    ctx.beginPath(); ctx.rect(r.x, cy - ch / 2, r.w, Math.max(2, ch)); ctx.clip();
+    const cover = bmp => { const k = Math.max(r.w / bmp.width, r.h / bmp.height), bw = bmp.width * k, bh = bmp.height * k; ctx.drawImage(bmp, r.x + (r.w - bw) / 2, r.y + (r.h - bh) / 2, bw, bh); };
+    const library = (base, t0) => { const L = this.layer, lx = L.getContext('2d'); lx.clearRect(0, 0, L.width, L.height); drawBaseScene(lx, base, { x: 0, y: 0, w: r.w, h: r.h }, (now - t0) / 1000, st, s.speak); ctx.drawImage(L, 0, 0, r.w, r.h, r.x, r.y, r.w, r.h); };
+    const f = this.fade, fk = f ? clamp((now - f.at) / 1200) : 1;
+    if (f && fk < 1) { if (f.bitmap) cover(f.bitmap); else if (f.base) library(f.base, f.t0); }
+    else if (f) { f.bitmap?.close(); this.fade = null; }
+    const base = f ? ease(fk) : 1;
+    if (sc) {
+      if (s.bespoke < 0.999) { ctx.globalAlpha = base * (1 - ease(s.bespoke)); library(sc.base, sc.t0); }
+      if (sc.bitmap) { ctx.globalAlpha = base * ease(s.bespoke); cover(sc.bitmap); }
+    }
+    ctx.globalAlpha = 1;
+    if (on < 1) { ctx.fillStyle = `rgba(255,248,235,${0.9 * (1 - on)})`; ctx.fillRect(r.x, cy - Math.max(1.5, ch / 2), r.w, Math.max(3, ch)); }   // the switch-on line
+    const glare = ctx.createLinearGradient(r.x, r.y, r.x + r.w * 0.6, r.y + r.h); glare.addColorStop(0, 'rgba(255,255,255,0.10)'); glare.addColorStop(0.45, 'rgba(255,255,255,0)'); glare.addColorStop(1, 'rgba(255,255,255,0.03)');
+    ctx.fillStyle = glare; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.restore();
   }
 
   // What stands behind the user in "match" mode: their own generated backdrop (separate from Claude's scene),

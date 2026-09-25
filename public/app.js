@@ -3,12 +3,20 @@
 import { Stage } from './stage.js';
 import { Broadcast } from './broadcast.js';
 import { STYLES, LEGACY_STYLES } from './styles.js';
+import { feelingSpoken, feelingHeard } from './emotion.js';
 import { Mic, PcmUploader, Player } from './audio.js';
 import { recordTrack, recordPcm, backups, recover, removeRecording, backupBlob } from './recording.js';
 
 const $ = s => document.querySelector(s);
 const video = $('#camera');
 const stage = new Stage($('#stage'), video);
+// Claude notices the cursor outside a turn (its eyes follow it), and a click on Claude is a friendly poke.
+{
+  const el = $('#stage'), at = e => { const r = el.getBoundingClientRect(); return [(e.clientX - r.left) * el.width / r.width, (e.clientY - r.top) * el.height / r.height]; };
+  el.addEventListener('pointermove', e => { const [x, y] = at(e); stage.pointer = { x, y, at: performance.now() }; });
+  el.addEventListener('pointerleave', () => { stage.pointer = null; });
+  el.addEventListener('click', e => { const [x, y] = at(e); if (stage.hitClaude(x, y)) stage.poke(); });
+}
 const uuid = () => crypto.randomUUID();
 const display = speech => speech.replace(/\[[^\]\n]{0,80}\]/g, '').replace(/\[[^\]]*$/, '').replace(/\s+/g, ' ').trim();
 const fmtBytes = n => n > 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`;
@@ -18,7 +26,7 @@ const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } cat
 let phase = 'lobby';          // lobby | starting | live | ending | ended
 let status = null, session = null, es = null, ctx = null, stream = null, mic = null, uploader = null, player = null;
 let recorders = [], recProgress = {}, t0 = 0, muted = false, connectionLost = false, lastPartialAt = -1e9;
-let sceneFrame = null;         // sandboxed iframe drawing the current bespoke scene
+let sceneFrame = null, oldSceneFrame = null;   // sandboxed iframes: the newest bespoke scene, and the one still on screen
 let current = null;           // Claude's current reply: {id, speech, chars, stopped, completed, error, el}
 const clientMs = () => Math.round(performance.now() - t0);
 
@@ -182,7 +190,7 @@ function segment(el, items, current, pick) {
   for (const b of el.children) b.setAttribute('aria-checked', String(b.dataset.value === current));
 }
 function setStyle(key, push = true) {
-  key = LEGACY_STYLES[key] || key; stage.style = STYLES[key] ? key : 'clawd'; store.set('claude-interview.style', stage.style);
+  key = LEGACY_STYLES[key] || key; stage.style = STYLES[key] ? key : 'cafe'; store.set('claude-interview.style', stage.style);
   segment($('#seg-style'), Object.entries(STYLES).map(([k, v]) => [k, v.name]), stage.style, setStyle);
   if (push && phase === 'live') api('config', { style: stage.style }).catch(error => toast(error.message, true));
 }
@@ -192,7 +200,7 @@ function setVisuals(mode, push = true) {
   if (mode === 'off') { dropSceneFrame(); stage.sceneClear(); }
   if (push && phase === 'live') api('config', { visuals: mode }).catch(error => toast(error.message, true));
 }
-setStyle(store.get('claude-interview.style') || 'clawd', false); setVisuals(visuals, false);
+setStyle(store.get('claude-interview.style') || 'cafe', false); setVisuals(visuals, false);   // Café is the default look
 
 // The user's background: the real camera, a soft blur, or the world of the conversation (the scene on screen,
 // or Claude's current look). Segmentation runs locally; the raw camera recording is unchanged.
@@ -258,6 +266,29 @@ $('#inp-name').value = store.get('claude-interview.name') || ''; stage.userName 
 $('#inp-name').oninput = () => { stage.userName = userName(); store.set('claude-interview.name', $('#inp-name').value.trim()); };
 $('#inp-name').onchange = () => { if (phase === 'live') api('config', { user_name: $('#inp-name').value.trim() }).catch(error => toast(error.message, true)); };
 
+// Vision: while a call is live, one small still of the raw camera (unmirrored, so held-up text reads correctly) goes to the
+// backend each second. The backend keeps a short rolling buffer and sends Claude a few stills from each of your turns.
+const VISION = [['off', 'Off'], ['still', 'Still'], ['few', 'Few'], ['more', 'More'], ['live', 'Live']];
+const VISION_HINT = { off: 'Claude can\u2019t see you.', still: 'One still as you finish each turn.', few: 'Start, middle and end of each turn. About 1,300 tokens a turn.',
+  more: '8 stills since Claude\u2019s last reply, including your reactions. About 3,500 tokens.', live: 'A still every second since Claude\u2019s last reply (up to 40). Adds about 2 s before replies.' };
+let vision = VISION.some(([v]) => v === store.get('claude-interview.vision-level')) ? store.get('claude-interview.vision-level') : store.get('claude-interview.vision') === false ? 'off' : 'few';
+function setVision(level, push = true) {
+  vision = level; store.set('claude-interview.vision-level', level);
+  segment($('#seg-vision'), VISION, level, setVision); $('#vision-hint').textContent = VISION_HINT[level];
+  if (push && phase === 'live') api('config', { vision_level: level }).catch(error => toast(error.message, true));
+}
+setVision(vision, false);
+{
+  const grab = document.createElement('canvas'); let sending = false;
+  setInterval(() => {
+    if (phase !== 'live' || !session || sending || vision === 'off' || !stage.cameraOn || video.readyState < 2 || !video.videoWidth) return;
+    const w = vision === 'live' ? 512 : 768;                                   // many frames per turn: smaller, so replies stay quick
+    grab.width = w; grab.height = Math.round(w * video.videoHeight / video.videoWidth);
+    grab.getContext('2d').drawImage(video, 0, 0, grab.width, grab.height); sending = true;
+    grab.toBlob(blob => { if (!blob || !session) { sending = false; return; } request(`/api/sessions/${session.id}/frame`, blob, 5000).catch(() => {}).finally(() => { sending = false; }); }, 'image/jpeg', 0.72);
+  }, 1000);
+}
+
 // ---------- side panels ----------
 function openPanel(name) {
   for (const id of ['settings', 'drawer']) $(`#${id}`).hidden = id !== name;
@@ -298,7 +329,7 @@ $('#btn-start').onclick = async () => {
     broadcast.sourcesChanged();
     const model = $('#sel-model').value;
     store.set('claude-interview.model', { model, effort }); store.set('claude-interview.voice-pick', $('#sel-voice').value);
-    session = await request('/api/sessions', { user_name: $('#inp-name').value.trim(), topic: $('#inp-topic').value.trim(), voice_id: $('#sel-voice').value, tts_model: 'eleven_v3_conversational', claude_model: model, claude_effort: effort, visuals, style: stage.style, backdrops: store.get('claude-interview.bg') !== 'off' && store.get('claude-interview.bg') !== 'blur' });
+    session = await request('/api/sessions', { user_name: $('#inp-name').value.trim(), vision_level: vision, topic: $('#inp-topic').value.trim(), voice_id: $('#sel-voice').value, tts_model: 'eleven_v3_conversational', claude_model: model, claude_effort: effort, visuals, style: stage.style, backdrops: store.get('claude-interview.bg') !== 'off' && store.get('claude-interview.bg') !== 'blur' });
     who.model = model; who.effort = effort; who.voice = $('#sel-voice').selectedOptions[0]?.textContent.split(' \u2014 ')[0] || ''; showWho();
     t0 = performance.now();
     await connectEvents();
@@ -359,8 +390,10 @@ const guard = e => { if (phase === 'live' || phase === 'ending') { e.preventDefa
 function handle(e) {
   switch (e.type) {
     case 'stt-connected': chip('stt', 'Listening', 'ok'); break;
-    case 'partial-transcript': lastPartialAt = performance.now(); stage.caption('user', e.text); stage.backchannel(); break;
-    case 'user-turn': stage.caption('user', e.turn.text); addLine('user', e.turn.text); break;
+    case 'partial-transcript': lastPartialAt = performance.now(); stage.caption('user', e.text); stage.backchannel();
+      if (/\b(ha(ha)+|lol)\b|\(laugh/i.test(e.text) && (!stage.mood || performance.now() - stage.mood.at > 2500)) stage.setMood('laughs softly'); break;   // laughing along
+    case 'user-turn': { stage.caption('user', e.turn.text); addLine('user', e.turn.text);
+      const feel = feelingHeard(e.turn.text); if (feel) stage.setMood(feel); break; }
     case 'turn-start': {
       // A new reply supersedes any earlier one that is still sounding.
       // (A typed turn does not cancel a reply that finished generating but is still playing, so mark it here.)
@@ -395,7 +428,7 @@ function handle(e) {
     case 'scene-base': if (visuals !== 'off') stage.sceneBase(e); break;
     case 'scene-none': stage.sceneClear(); dropSceneFrame(); break;
     case 'scene-ready': if (visuals !== 'off') openSceneFrame(e.scene_id, e.url); break;
-    case 'scene-error': stage.sceneDone(e.scene_id); console.warn('Scene not drawn:', e.message); break;
+    case 'scene-error': if (e.sketch) stage.sceneStandIn(e.scene_id); else stage.sceneDone(e.scene_id); console.warn('Scene not drawn:', e.message); break;
     case 'backdrop-ready': openBackdropFrame(e.backdrop_id, e.url); break;
     case 'backdrop-error': console.warn('Backdrop not drawn:', e.message); break;
     case 'mic-muted': case 'mic-unmuted': setMuted(e.type === 'mic-muted'); break;
@@ -418,10 +451,10 @@ function openSceneFrame(id, url) {
   f.className = 'scene-frame'; f.setAttribute('sandbox', 'allow-scripts'); f.setAttribute('aria-hidden', 'true'); f.tabIndex = -1;
   f.src = url; f.dataset.scene = id;
   document.body.append(f);
-  const old = sceneFrame; sceneFrame = f;
-  setTimeout(() => old?.remove(), 1500);
+  // the picture on screen keeps animating until the new one has drawn its first frame (or turns out broken)
+  oldSceneFrame?.remove(); oldSceneFrame = sceneFrame; sceneFrame = f;
 }
-function dropSceneFrame() { sceneFrame?.remove(); sceneFrame = null; }
+function dropSceneFrame() { sceneFrame?.remove(); oldSceneFrame?.remove(); sceneFrame = oldSceneFrame = null; }
 // The user's backdrop runs in its own sandboxed frame, independent of the scene on Claude's side.
 let backdropFrame = null;
 function openBackdropFrame(id, url) {
@@ -432,10 +465,17 @@ function openBackdropFrame(id, url) {
 function dropBackdropFrame() { backdropFrame?.remove(); backdropFrame = null; stage.backdropClear(); }
 addEventListener('message', e => {
   if (backdropFrame && e.source === backdropFrame.contentWindow) { if (e.data?.type === 'scene-frame' && e.data.bitmap instanceof ImageBitmap) stage.backdropBitmap(backdropFrame.dataset.backdrop, e.data.bitmap); return; }
-  if (!sceneFrame || e.source !== sceneFrame.contentWindow) return;
-  const id = sceneFrame.dataset.scene;
-  if (e.data?.type === 'scene-frame' && e.data.bitmap instanceof ImageBitmap) stage.sceneBitmap(id, e.data.bitmap);
+  const from = [sceneFrame, oldSceneFrame].find(f => f && e.source === f.contentWindow); if (!from) return;
+  const id = from.dataset.scene;
+  if (e.data?.type === 'scene-frame' && e.data.bitmap instanceof ImageBitmap) {
+    stage.sceneBitmap(id, e.data.bitmap);
+    if (from === sceneFrame && stage.scene?.id === id && oldSceneFrame) { oldSceneFrame.remove(); oldSceneFrame = null; }
+  }
   else if (e.data?.type === 'scene-error') console.warn('Scene script error:', e.data.message);
+  else if (e.data?.type === 'scene-broken' && from === sceneFrame) {
+    // a picture that keeps failing is dropped; the previous one (if any) carries on
+    console.warn('Scene dropped: its code kept failing.'); stage.sceneDone(id); sceneFrame.remove(); sceneFrame = oldSceneFrame; oldSceneFrame = null;
+  }
 });
 function toggleVisual() { stage.sceneHidden = !stage.sceneHidden; $('#btn-visual').setAttribute('aria-pressed', String(!stage.sceneHidden)); }
 
@@ -447,6 +487,15 @@ function animateSpeech(at) {
   const tags = [...raw.matchAll(/\[([^\]]{1,40})\]/g)];
   if (tags.length > (current.moods || 0)) { current.moods = tags.length; stage.setMood(tags.at(-1)[1].toLowerCase()); }
   const spoken = raw.replace(/\[[^\]]*\]?/g, ''); last = spoken.at(-1)?.toLowerCase() || ' ';
+  // As each sentence starts to play, its words set the mood (unless the sentence carries its own delivery cue).
+  const bounds = [...raw.matchAll(/(?:^|[.!?\u2026]\s+)(?=\S)/g)];
+  if (bounds.length > (current.sentences || 0)) {
+    current.sentences = bounds.length;
+    const from = bounds.at(-1).index + bounds.at(-1)[0].length, all = current.chars.map(c => c.ch).join('');
+    const sentence = all.slice(from).split(/(?<=[.!?\u2026])\s/)[0];
+    const feel = /\[[^\]]+\]/.test(sentence) ? null : feelingSpoken(sentence);
+    if (feel && (!stage.mood || performance.now() - stage.mood.at > 1200)) stage.setMood(feel);
+  }
   // a question or exclamation mark that has actually been played shapes the face (unless a cue is active)
   const marks = (spoken.match(/[?!]/g) || []).length;
   if (marks > (current.marks || 0)) { current.marks = marks; if (!stage.mood || performance.now() - stage.mood.at > 1500) stage.setMood(last === '?' ? 'question' : 'exclaim'); }
@@ -503,7 +552,7 @@ function renderFrame(now) {
   stage.frame(now);
   // drive the bespoke scene one frame per display frame (see sceneFrameHTML in src/director.mjs)
   const env = { type: 'env', env: { level: player ? Math.min(1, player.level() * 6) : 0, speaking: stage.claude === 'speaking' } };
-  sceneFrame?.contentWindow?.postMessage(env, '*'); backdropFrame?.contentWindow?.postMessage(env, '*');
+  sceneFrame?.contentWindow?.postMessage(env, '*'); oldSceneFrame?.contentWindow?.postMessage(env, '*'); backdropFrame?.contentWindow?.postMessage(env, '*');
 }
 let lastDraw = 0;
 function drawLoop(now) { if (!document.hidden && now - lastDraw >= 1000 / 30 - 1) { lastDraw = now; renderFrame(now); } requestAnimationFrame(drawLoop); }

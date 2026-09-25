@@ -76,25 +76,29 @@ test('conversation prompt is editable, resettable, used on the next reply, and c
   const{data:s}=await api('/api/sessions',{voice_id:'voice-1'});const base=`/api/sessions/${s.id}`;
   assert.equal(fs.readFileSync(path.join(root,'recordings',s.id,'system-prompt.md'),'utf8'),'Edited prompt.');
   await api(base+'/turn',{text:'Hello',request_id:randomUUID(),reply_id:randomUUID()});await new Promise(r=>setTimeout(r,30));
-  assert.equal(seen,'Edited prompt.');
+  assert.ok(seen.startsWith('Edited prompt.\n\n'),'the edited prompt is used, followed only by the per-turn vision note');assert.match(seen,/see the person you're talking with/);
   assert.equal((await api('/api/prompt',{reset:true})).data.text,'Default prompt.');
   await api(base+'/end',{});
 });
-test('visuals: a parallel scene call streams a library header, then saves sandboxed bespoke code',async t=>{
-  const calls=[];const{api,base,root,cookie}=await fixture(t,subscribed,{claude:async({system,schema,onText,onModel,model,effort})=>{
-    if(system.includes('moving picture')){calls.push({model,effort});onText('{"visual": true, "title": "Far future", "base": "city", "words": ["3026"], "palette": ["#112233"]}\n');onText('---\nfunction draw(ctx,t,env){ctx.fillRect(0,0,W,H);}\n');return{text:''};}
+test('visuals: a quick sketch by a fast model, then the finished picture developed from it by a stronger model',async t=>{
+  const calls=[];const{api,base,root,cookie}=await fixture(t,subscribed,{claude:async({system,schema,onText,onModel,model,effort,prompt})=>{
+    if(system.includes('moving picture')){const input=JSON.parse(prompt);calls.push({model,effort,input});
+      onText('{"visual": true, "title": "Far future", "subject": "a city under glass", "composition": "dome centre, towers left", "shot": "wide establishing landscape", "base": "city", "words": ["3026"], "palette": ["#112233"]}\n');
+      onText(input.stage==='sketch'?'---\nfunction draw(ctx,t,env){ctx.fillRect(0,0,W,H);}\n':'---\nfunction draw(ctx,t,env){ctx.fillStyle="#123";ctx.fillRect(0,0,W,H);ctx.fillRect(1,1,2,2);}\n');return{text:''};}
     onModel?.('m');onText('Ok.');return{text:'Ok.'};}});
   await api('/api/settings',{api_key:'test-secret'});
   const{data:s}=await api('/api/sessions',{voice_id:'voice-1',visuals:'always',style:'riso'});const route=`/api/sessions/${s.id}`;
   await api(route+'/turn',{text:'What will the world look like in a thousand years?',request_id:randomUUID(),reply_id:randomUUID()});
-  let session;for(let i=0;i<40;i++){session=(await api(route)).data;if(session.scenes.length)break;await new Promise(r=>setTimeout(r,10));}
-  assert.deepEqual(calls[0],{model:'claude-opus-5-5',effort:'low'});
-  assert.equal(session.scenes[0].base,'city');assert.equal(session.scenes[0].style,'riso');
-  assert.match(fs.readFileSync(path.join(root,'recordings',s.id,session.scenes[0].file),'utf8'),/function draw/);
-  const events=fs.readFileSync(path.join(root,'recordings',s.id,'events.jsonl'),'utf8');assert.match(events,/"scene-base"/);assert.match(events,/"scene-ready"/);
-  const frame=await fetch(`${base}/scene-frame/${s.id}/${session.scenes[0].id}`,{headers:{Cookie:cookie}});
-  assert.match(frame.headers.get('content-security-policy'),/sandbox allow-scripts/);assert.match(frame.headers.get('content-security-policy'),/connect-src 'none'/);
-  assert.match(await frame.text(),/"background":"#f3eee4"/);
+  let session;for(let i=0;i<60;i++){session=(await api(route)).data;if(session.scenes.some(x=>!x.sketch))break;await new Promise(r=>setTimeout(r,10));}
+  assert.deepEqual(calls.map(c=>[c.model,c.effort,c.input.stage]),[['claude-sonnet-5','low','sketch'],['claude-opus-5-5','low','final']]);
+  assert.match(calls[1].input.sketch.code,/function draw/);assert.equal(calls[1].input.sketch.header.composition,'dome centre, towers left');
+  assert.equal(session.scenes.length,1,'the finished picture replaces its sketch in the record');
+  const scene=session.scenes[0];assert.equal(scene.id,'scene-001');assert.equal(scene.base,'city');assert.equal(scene.style,'riso');assert.equal(scene.sketch_file,'scenes/scene-001-sketch.js');
+  assert.match(fs.readFileSync(path.join(root,'recordings',s.id,scene.file),'utf8'),/fillStyle="#123"/);
+  const events=fs.readFileSync(path.join(root,'recordings',s.id,'events.jsonl'),'utf8').trim().split('\n').map(JSON.parse).filter(e=>/^scene-/.test(e.type)).map(e=>`${e.type}:${e.scene_id}${e.refine?':refine':''}`);
+  assert.deepEqual(events,['scene-start:scene-001','scene-base:scene-001-sketch','scene-ready:scene-001-sketch','scene-base:scene-001:refine','scene-ready:scene-001']);
+  for(const id of ['scene-001','scene-001-sketch']){const frame=await fetch(`${base}/scene-frame/${s.id}/${id}`,{headers:{Cookie:cookie}});assert.equal(frame.status,200);
+    assert.match(frame.headers.get('content-security-policy'),/sandbox allow-scripts/);assert.match(frame.headers.get('content-security-policy'),/connect-src 'none'/);assert.match(await frame.text(),/"background":"#f3eee4"/);}
   assert.equal((await api(route+'/config',{visuals:'sometimes'})).status,400);
   await api(route+'/end',{});
 });
@@ -184,6 +188,92 @@ test('observer disconnect preserves call; controller disconnect ends it',async t
   const observer=await fetch(base+route+'/events',{headers:{Cookie:cookie}});await observer.body.cancel();await new Promise(r=>setTimeout(r,20));assert.equal((await api(route)).data.status,'active');
   const controller=await fetch(base+route+'/events?controller=1',{headers:{Cookie:cookie}});await controller.body.cancel();await new Promise(r=>setTimeout(r,20));assert.equal((await api(route)).data.status,'ended');
 });
+test('visuals: a new turn never cancels a picture in progress; one follow-up runs after it and may keep it',async t=>{
+  const prompts=[];let release;const first=new Promise(r=>release=r);
+  const{api,base,cookie}=await fixture(t,subscribed,{claude:async({system,onText,onModel,prompt,signal})=>{
+    if(system.includes('moving picture')){const input=JSON.parse(prompt);prompts.push(input);
+      if(prompts.length===1){onText('{"visual": true, "title": "Eddies in a cup", "subject": "tea swirling into turbulent eddies", "shot": "close-up", "base": "waves"}\n');await first;
+        if(signal?.aborted)throw new DOMException('Interrupted','AbortError');onText('---\nfunction draw(ctx,t,env){ctx.fillRect(0,0,W,H);}\n');return{text:''};}
+      if(input.stage==='final'){onText(JSON.stringify(input.sketch.header)+'\n---\nfunction draw(ctx,t,env){ctx.fillRect(0,0,W,H);}\n');return{text:''};}
+      onText('{"visual": "keep"}');return{text:''};}
+    onModel?.('m');onText('Ok.');return{text:'Ok.'};}});
+  await api('/api/settings',{api_key:'test-secret'});
+  const{data:s}=await api('/api/sessions',{voice_id:'voice-1',visuals:'always'});const route=`/api/sessions/${s.id}`;
+  const say=text=>api(route+'/turn',{text,request_id:randomUUID(),reply_id:randomUUID()});
+  await say('Tell me about Navier-Stokes.');await new Promise(r=>setTimeout(r,20));
+  await say('And turbulence?');await say('Why is it hard?');await new Promise(r=>setTimeout(r,20));
+  assert.equal(prompts.length,1,'the in-flight picture is not restarted');
+  release();let session;for(let i=0;i<80;i++){session=(await api(route)).data;if(prompts.length===3&&session.scenes.some(x=>!x.sketch))break;await new Promise(r=>setTimeout(r,10));}
+  await new Promise(r=>setTimeout(r,30));
+  assert.deepEqual(prompts.map(p=>p.stage),['sketch','final','sketch'],'sketch, its finished version, then exactly one queued follow-up');
+  assert.equal(session.scenes.length,1);assert.equal(session.scenes[0].subject,'tea swirling into turbulent eddies');assert.equal(session.scenes[0].shot,'close-up');
+  assert.equal(prompts[2].on_screen_now.title,'Eddies in a cup');assert.deepEqual(prompts[2].canvas,{width:888,height:560});
+  assert.ok(prompts[2].conversation.some(x=>x.text==='Why is it hard?'),'the follow-up sees the latest turn');
+  const frame=await (await fetch(`${base}/scene-frame/${s.id}/${session.scenes[0].id}`,{headers:{Cookie:cookie}})).text();
+  assert.match(frame,/const W=888,H=560;/);
+  const events=fs.readFileSync(path.join(session.recording_directory,'events.jsonl'),'utf8');assert.match(events,/"scene-keep"/);
+  await api(route+'/end',{});
+});
+test('vision: camera stills from the turn go to Claude, are saved beside the recording, and can be switched off',async t=>{
+  const calls=[];const{api}=await fixture(t,subscribed,{claude:async({system,images,schema,onText,onModel})=>{
+    if(system.includes('moving picture')||system.includes('ambient backdrop'))return{text:''};
+    calls.push({system,images});onModel?.('m');onText('Nice mug.');return{text:'Nice mug.'};}});
+  await api('/api/settings',{api_key:'test-secret'});
+  const{data:s}=await api('/api/sessions',{voice_id:'voice-1'});const route=`/api/sessions/${s.id}`;assert.equal(s.settings.vision_level,'few');
+  const jpeg=n=>Buffer.concat([Buffer.from([0xff,0xd8,0xff,0xe0]),Buffer.from('frame-'+n)]);
+  assert.equal((await api(route+'/frame',Buffer.from('not a jpeg'))).status,400);
+  await api(route+'/frame',jpeg(1));await new Promise(r=>setTimeout(r,1300));await api(route+'/frame',jpeg(2));
+  await api(route+'/turn',{text:'Look at this mug.',request_id:randomUUID(),reply_id:randomUUID()});
+  let session;for(let i=0;i<50;i++){session=(await api(route)).data;if(session.turns.some(x=>x.speaker==='claude'&&x.status==='generated'))break;await new Promise(r=>setTimeout(r,10));}
+  const reply=calls.at(-1);assert.equal(reply.images.length,2,'start and end of the turn');
+  assert.match(reply.images[0].label,/Frame 1 of 2 .* s before they finished/);assert.match(reply.images[1].label,/as they finished speaking/);
+  assert.equal(Buffer.from(reply.images[1].data,'base64').toString().slice(4),'frame-2');assert.match(reply.system,/You can see the person you're talking with/);
+  const seen=session.turns.find(x=>x.speaker==='claude').seen;assert.equal(seen.length,2);
+  assert.equal(fs.readFileSync(path.join(session.recording_directory,seen[1].file)).subarray(4).toString(),'frame-2');
+  await api(route+'/config',{vision:false});await api(route+'/frame',jpeg(3));
+  await api(route+'/turn',{text:'And now?',request_id:randomUUID(),reply_id:randomUUID()});
+  for(let i=0;i<50&&calls.length<2;i++)await new Promise(r=>setTimeout(r,10));
+  assert.equal(calls.at(-1).images.length,0);assert.match(calls.at(-1).system,/can't see the person you're talking with/);
+  await api(route+'/end',{});
+});
+test('vision levels: live sends every still since the last reply, still sends one, and unknown levels are refused',async t=>{
+  const calls=[];const{api}=await fixture(t,subscribed,{claude:async({system,images,onText,onModel})=>{
+    if(system.includes('moving picture')||system.includes('ambient backdrop'))return{text:''};
+    calls.push({system,images});onModel?.('m');onText('Ok.');return{text:'Ok.'};}});
+  await api('/api/settings',{api_key:'test-secret'});
+  const{data:s}=await api('/api/sessions',{voice_id:'voice-1',vision_level:'live'});const route=`/api/sessions/${s.id}`;assert.equal(s.settings.vision_level,'live');
+  const jpeg=n=>Buffer.concat([Buffer.from([0xff,0xd8,0xff,0xe0]),Buffer.from('f'+n)]);
+  const turn=async text=>{const before=calls.length;await api(route+'/turn',{text,request_id:randomUUID(),reply_id:randomUUID()});for(let i=0;i<80&&calls.length===before;i++)await new Promise(r=>setTimeout(r,10));await new Promise(r=>setTimeout(r,20));return calls.at(-1);};
+  for(let i=1;i<=5;i++)await api(route+'/frame',jpeg(i));
+  const live=await turn('What am I doing?');assert.equal(live.images.length,5,'every still in the window');assert.match(live.system,/close to watching live/);
+  assert.equal((await api(route+'/config',{vision_level:'blink'})).status,400);
+  await api(route+'/config',{vision_level:'still'});for(let i=6;i<=8;i++)await api(route+'/frame',jpeg(i));
+  const still=await turn('And now?');assert.equal(still.images.length,1);assert.equal(Buffer.from(still.images[0].data,'base64').subarray(4).toString(),'f8');
+  await api(route+'/end',{});
+});
+test('visuals: the sketch starts while the person is still talking, and their finished turn does not ask again',async t=>{
+  const prompts=[];const{api}=await fixture(t,subscribed,{Scribe:TestScribe,claude:async({system,onText,onModel,prompt})=>{
+    if(system.includes('moving picture')){const input=JSON.parse(prompt);prompts.push(input);
+      onText('{"visual": true, "title": "Kites over a harbour", "subject": "kites", "shot": "wide", "base": "field"}\n---\nfunction draw(ctx,t,env){ctx.fillRect(0,0,W,H);}\n');return{text:''};}
+    if(system.includes('ambient backdrop'))return{text:''};
+    onModel?.('m');onText('Ok.');return{text:'Ok.'};}});
+  await api('/api/settings',{api_key:'test-secret'});
+  const{data:s}=await api('/api/sessions',{voice_id:'voice-1',visuals:'always'});const route=`/api/sessions/${s.id}`;
+  await api(route+'/listen',{});const hear=m=>TestScribe.current.options.onMessage(m);
+  hear({message_type:'partial_transcript',text:'So I was down at the harbour'});
+  assert.equal(prompts.length,0,'too early: not enough said yet');
+  await new Promise(r=>setTimeout(r,3100));
+  hear({message_type:'partial_transcript',text:'So I was down at the harbour watching people fly enormous kites'});
+  for(let i=0;i<50&&prompts.length<1;i++)await new Promise(r=>setTimeout(r,10));
+  assert.equal(prompts[0].stage,'sketch');const live=prompts[0].conversation.at(-1);
+  assert.equal(live.still_speaking,true);assert.match(live.text,/enormous kites/);
+  hear({message_type:'committed_transcript',text:'So I was down at the harbour watching people fly enormous kites.'});
+  for(let i=0;i<80;i++){if((await api(route)).data.turns.some(x=>x.speaker==='claude'&&x.status==='generated'))break;await new Promise(r=>setTimeout(r,10));}
+  await new Promise(r=>setTimeout(r,50));
+  assert.deepEqual(prompts.map(p=>p.stage),['sketch','final'],'no second picture decision for the same speech');
+  assert.ok(!prompts[1].conversation.some(x=>x.still_speaking),'the finishing pass sees the committed turn');
+  await api(route+'/end',{});
+});
 test('API-key mode without a key refuses a call and says what is missing',async t=>{
   const{api}=await fixture(t,{mode:'api',apiKeySet:false,ready:false});await api('/api/settings',{api_key:'test-secret'});
   const r=await api('/api/sessions',{});assert.equal(r.status,409);assert.match(r.data.error,/ANTHROPIC_API_KEY/);
@@ -195,7 +285,7 @@ test('the person\'s name is optional, cleaned, and added to Claude\'s prompt onl
   const{data:s}=await api('/api/sessions',{user_name:'  Ada [whispers]\nLovelace ',voice_id:'voice-1'});
   assert.equal(s.settings.user_name,'Ada whispers Lovelace');
   await api(`/api/sessions/${s.id}/turn`,{text:'Hi there',request_id:randomUUID(),reply_id:randomUUID()});await new Promise(r=>setTimeout(r,30));
-  assert.match(systems.at(-1),/The person you're talking with is called Ada whispers Lovelace\.\n$/);
+  assert.match(systems.at(-1),/The person you're talking with is called Ada whispers Lovelace\.\n/);
   assert.ok(!fs.readFileSync(path.join(root,'prompts','conversation.md'),'utf8').includes('Ada'));
   await api(`/api/sessions/${s.id}/end`,{});
   const{data:unnamed}=await api('/api/sessions',{voice_id:'voice-1'});assert.equal(unnamed.settings.user_name,'');

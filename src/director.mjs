@@ -53,11 +53,15 @@ export function freshBase(base, recent, turn = 0) {
   return unused[turn % unused.length] || base;
 }
 export function normalizeHeader(h) {
+  // "keep": the picture on screen still fits, so nothing new is painted.
+  if (h?.visual === 'keep') return { visual: false, keep: true };
   if (!h || h.visual !== true) return { visual: false };
   const palette = (Array.isArray(h.palette) ? h.palette : []).filter(c => /^#[0-9a-f]{3,8}$/i.test(c)).slice(0, 5);
-  return { visual: true, title: clean(h.title), base: SCENE_BASES.includes(h.base) ? h.base : 'field',
-    words: (Array.isArray(h.words) ? h.words : []).map(clean).filter(Boolean).slice(0, 4), palette };
+  return { visual: true, title: clean(h.title), subject: String(h.subject ?? '').replace(/[\u0000-\u001f]/g, ' ').slice(0, 160), composition: String(h.composition ?? '').replace(/[\u0000-\u001f]/g, ' ').slice(0, 200), shot: clean(h.shot),
+    base: SCENE_BASES.includes(h.base) ? h.base : 'field', words: (Array.isArray(h.words) ? h.words : []).map(clean).filter(Boolean).slice(0, 4), palette };
 }
+// Claude's scene sits above Claude in the top of its tile (landscape); backdrops fill the whole tile.
+export const SCENE_SIZE = { width: 888, height: 560 }, BACKDROP_SIZE = { width: 888, height: 852 };
 
 // Compile-only check: the code must parse and define draw(). It is never executed in the backend.
 export function checkSceneCode(code) {
@@ -72,16 +76,26 @@ export function checkSceneCode(code) {
 export function sceneFrameHTML({ code, style, width = 888, height = 852 }) {
   const safe = s => s.replace(/<\/script/gi, '<\\/script');
   return `<!doctype html><meta charset="utf-8"><title>scene</title>
-<script>const W=${width},H=${height};const STYLE=${safe(JSON.stringify(style))};</script>
+<script>const W=${width},H=${height};const STYLE=${safe(JSON.stringify(style))};
+// Generated code often slips on numbers (a NaN alpha, a negative radius). These calls throw on such values and would
+// stop the whole picture, so they are made forgiving: bad colours become transparent, bad numbers become 0.
+(()=>{const fin=v=>Number.isFinite(+v)?+v:0,G=CanvasGradient.prototype,add=G.addColorStop;
+G.addColorStop=function(o,c){o=Math.min(1,Math.max(0,fin(o)));try{add.call(this,o,c);}catch{try{add.call(this,o,'rgba(0,0,0,0)');}catch{}}};
+for(const P of[OffscreenCanvasRenderingContext2D.prototype,CanvasRenderingContext2D.prototype]){
+for(const m of['createLinearGradient','createRadialGradient']){const f=P[m];P[m]=function(...a){a=a.map(fin);if(m==='createRadialGradient'){a[2]=Math.abs(a[2]);a[5]=Math.abs(a[5]);}return f.apply(this,a);};}
+const arc=P.arc;P.arc=function(x,y,r,...a){return arc.call(this,x,y,Math.abs(fin(r)),...a);};
+const el=P.ellipse;P.ellipse=function(x,y,rx,ry,...a){return el.call(this,x,y,Math.abs(fin(rx)),Math.abs(fin(ry)),...a);};}})();</script>
 <script>${safe(code)}</script>
 <script>
-(()=>{const cv=new OffscreenCanvas(W,H),ctx=cv.getContext('2d');let env={level:0,speaking:false},errors=0,busy=false,last=0;
+(()=>{const cv=new OffscreenCanvas(W,H),ctx=cv.getContext('2d');let env={level:0,speaking:false},errors=0,frames=0,broken=false,busy=false,last=0;
 const report=e=>{if(errors++===0)parent.postMessage({type:'scene-error',message:String(e&&e.message||e).slice(0,300)},'*');};
 try{if(typeof setup==='function')setup(ctx);}catch(e){report(e);}
 const t0=performance.now();
 // Frames are driven by the studio page: each 'env' message (sent every display frame) draws one frame.
 // Chrome throttles timers in hidden cross-origin frames to ~1 Hz, so a local timer is only a fallback.
-function frame(){if(busy)return;last=performance.now();try{draw(ctx,(last-t0)/1000,env);}catch(e){report(e);}
+// A frame whose draw() threw is never shown. A picture that keeps failing early is reported as broken and stops.
+function frame(){if(busy||broken)return;last=performance.now();frames++;try{draw(ctx,(last-t0)/1000,env);}catch(e){report(e);
+if(errors>15&&frames<90){broken=true;parent.postMessage({type:'scene-broken'},'*');}return;}
 busy=true;createImageBitmap(cv).then(b=>{busy=false;parent.postMessage({type:'scene-frame',bitmap:b},'*',[b]);},()=>{busy=false;});}
 addEventListener('message',e=>{if(e.data&&e.data.type==='env'){env=e.data.env;frame();}});
 setInterval(()=>{if(performance.now()-last>250)frame();},100);

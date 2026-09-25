@@ -8,7 +8,7 @@ Use `src/client.mjs` for a small Node client. No frontend secrets are required.
 | --- | --- |
 | GET `/api/status` | Verified Claude status, whether a backend key is set, voices, active session, disk space. No keys or tokens. |
 | POST `/api/settings` | CLI credential setup only: `{api_key}` validates voices and saves in Keychain (macOS; elsewhere use `ELEVENLABS_API_KEY`). `{}` loads existing backend credentials. Never add a key field to the frontend. |
-| POST `/api/sessions` | `{user_name?, topic?, claude_model?, claude_effort?:"low"|"medium"|"high"|"xhigh"|"max", voice_id?:"auto", tts_model?:"eleven_v3_conversational"}` → session with UUID and recording directory |
+| POST `/api/sessions` | `{user_name?, vision_level?, topic?, claude_model?, claude_effort?:"low"|"medium"|"high"|"xhigh"|"max", voice_id?:"auto", tts_model?:"eleven_v3_conversational"}` → session with UUID and recording directory |
 | GET `/api/sessions/:id` | Session snapshot |
 | GET `/api/sessions/:id/events` | SSE observer. Multiple observers are allowed. Audio is emitted only live. |
 | GET `/api/sessions/:id/events?controller=1` | One controlling client; disconnect ends the call. Reconnect is a new session, not replayed speech. |
@@ -16,7 +16,7 @@ Use `src/client.mjs` for a small Node client. No frontend secrets are required.
 | POST `/api/sessions/:id/input-audio` | Raw mono signed little-endian 16-bit PCM at **16,000 Hz**; sequential 200ms chunks (6,400 bytes) recommended, max 320,000 bytes |
 | POST `/api/sessions/:id/turn` | `{request_id:UUID, reply_id:UUID, text?, introduction?:true, client_ms?, words?}`. Introduction lets Claude choose its voice and greet you. Repeated request IDs are ignored. |
 | POST `/api/sessions/:id/interrupt` | `{turn_id?, reason?}`; stop local playback immediately too |
-| POST `/api/sessions/:id/config` | `{claude_model?, claude_effort?, voice_id?, topic?, user_name?, visuals?, style?, backdrops?}`; applies from the next reply, logged as `config-changed` |
+| POST `/api/sessions/:id/config` | `{claude_model?, claude_effort?, voice_id?, topic?, user_name?, vision_level?, visuals?, style?, backdrops?}`; applies from the next reply, logged as `config-changed` |
 | GET / POST `/api/prompt` | Claude's conversation prompt. POST `{text}` saves `prompts/conversation.md`, `{reset:true}` restores `prompts/conversation.default.md`. Applies from the next reply; each session keeps a copy as `system-prompt.md`. |
 | POST `/api/sessions/:id/mute` | `{muted:true|false}`; recorded/transmitted microphone samples become silence while muted |
 | POST `/api/sessions/:id/event` | Playback/capture/marker evidence, below |
@@ -38,12 +38,21 @@ Only one active session is allowed. Error JSON is `{error:"message"}`. Retain so
 
 ## Visuals while Claude talks
 
-Sessions accept `visuals: "off" | "useful" | "always"` (default `off`, so CLI calls don't spend extra requests) and `style` (one of the looks in `/api/status` → `scene_styles`, e.g. `"clawd"`, `"bloom"`, `"riso"`); both can change via `/config`. On each user turn the backend runs a second Claude call in parallel with the spoken reply (`claude-opus-5-5`, effort `low`, override with `INTERVIEW_SCENE_MODEL`; prompt in `prompts/scene.md`). It streams a one-line header first, emitted as `scene-base` `{scene_id,title,base,words,palette}` so the page can draw a pre-built library scene at once, then canvas code that is compile-checked, saved as `recordings/<id>/scenes/scene-NNN.js`, and announced as `scene-ready` `{scene_id,url}`. `scene-none` means no picture was wanted; `scene-error` keeps the library scene. `/scene-frame/<session>/<scene>` serves the code in a sandboxed page (opaque origin, `connect-src 'none'`) that posts ImageBitmaps to the studio page, which composites them into the recorded frame.
+Sessions accept `visuals: "off" | "useful" | "always"` (default `off`, so CLI calls don't spend extra requests) and `style` (one of the looks in `/api/status` → `scene_styles`, e.g. `"cafe"`, `"clawd"`, `"riso"`); both can change via `/config`. Pictures are drawn in two passes by parallel Claude calls that never delay speech (prompt in `prompts/scene.md`):
+
+1. **Sketch** (`claude-sonnet-5`, effort `low`, override with `INTERVIEW_SKETCH_MODEL`). It decides whether a new picture is wanted: `scene-keep` means keep the one on screen and `scene-none` means no picture. If a new picture is wanted, it streams a header (`scene-base` `{scene_id: "scene-NNN-sketch", title, subject, composition, shot, base, palette}`) and then short canvas code (`scene-ready`). It starts while the person is still speaking, once about 3 s and 8 words of live transcript are in, so it is usually ready as Claude starts to answer. A turn whose speech already started a picture doesn't start another.
+2. **Finished picture** (`claude-opus-5-5`, effort `low`, override with `INTERVIEW_SCENE_MODEL`). It is given the sketch's header and code to develop, waiting up to 10 s for the turn to finish first. It is announced with `scene-base` `{scene_id: "scene-NNN", refine: true}` and `scene-ready`, and the page crossfades it over the sketch.
+
+Code is compile-checked and saved as `recordings/<id>/scenes/scene-NNN-sketch.js` and `scene-NNN.js`. The session's `scenes` list keeps the finished picture, with `sketch_file`. `scene-error` (`sketch: true` for the first pass) keeps whatever is showing; a failed sketch with nothing on screen gets a library stand-in until the finished picture arrives. One picture is in progress at a time: a new turn queues one follow-up and never cancels. `/scene-frame/<session>/<scene>` serves the code in a sandboxed page (opaque origin, `connect-src 'none'`) that posts ImageBitmaps to the studio page, which composites them into the recorded frame.
 
 
 With `backdrops: true`, a third low-effort call (`prompts/backdrop.md`) paints a quiet backdrop for the person's side, announced as `backdrop-ready` and served from the same sandboxed frame route.
 
 `user_name` is optional display text (at most 40 characters). When set, one line naming the person is appended to Claude's system prompt for that call only; the prompt files never contain it.
+
+## Vision (camera stills to Claude)
+
+Sessions accept `vision_level: "off" | "still" | "few" | "more" | "live"` (default `few`; `vision: false` still means off; changeable via `/config`). still = 1 frame as the turn ends; few = the start, middle and end of the turn; more = 8 frames, and live = every frame up to 40, both covering everything since Claude's previous reply began. The browser sends 512 px frames at live and 768 px otherwise. While a call is live, a client may POST `/api/sessions/:id/frame` with one JPEG still from the camera, raw and unmirrored (the browser sends a 768 px frame every second). The backend keeps only the last 60 s in memory. When Claude replies, the stills chosen by the level go to Claude as image blocks through Claude Code's streaming input (`--input-format stream-json`). Exactly those stills are saved as `recordings/<id>/vision/<reply-id>-N.jpg` and listed on the reply turn as `seen`, with the `vision-sent` event. Each reply's system prompt says whether Claude can see the person on that turn. Stills are never re-sent in later turns.
 
 ## Streaming (optional)
 

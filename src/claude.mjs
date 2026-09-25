@@ -28,7 +28,7 @@ async function subscriptionStatus() {
 }
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-export function claudeArgs({ system, model = '', effort = '', schema } = {}) {
+export function claudeArgs({ system, model = '', effort = '', schema, images = false } = {}) {
   const args = ['--safe-mode', '--setting-sources', '', '-p', '--tools', '',
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
     '--no-session-persistence', '--output-format', 'stream-json', '--verbose',
@@ -36,21 +36,25 @@ export function claudeArgs({ system, model = '', effort = '', schema } = {}) {
   if (model.trim()) args.push('--model', model.trim());
   if (EFFORTS.includes(effort)) args.push('--effort', effort);
   if (schema) args.push('--json-schema', JSON.stringify(schema));
+  // Images can only be attached through streaming input: one JSON user message on stdin with image blocks.
+  if (images) args.push('--input-format', 'stream-json');
   return args;
 }
 
-export async function runClaude({ prompt, system, model, effort, schema, signal, onText = () => {}, onModel = () => {}, spawnProcess = spawn }) {
+export async function runClaude({ prompt, system, model, effort, schema, images, signal, onText = () => {}, onModel = () => {}, spawnProcess = spawn }) {
   if (signal?.aborted) throw new DOMException('Interrupted', 'AbortError');
   const status = await authStatus();
   if (!status.ready) throw new Error(status.mode === 'api' ? 'INTERVIEW_CLAUDE_AUTH=api is set but ANTHROPIC_API_KEY is missing.' : 'Claude subscription login required. Run ./interview login, then retry. There is no silent API fallback; see README for API-key mode.');
-  return runVerifiedClaude({ prompt, system, model, effort, schema, signal, onText, onModel, spawnProcess });
+  return runVerifiedClaude({ prompt, system, model, effort, schema, images, signal, onText, onModel, spawnProcess });
 }
 
 // Split from the authentication gate so the stream protocol can be tested offline.
-export function runVerifiedClaude({ prompt, system, model, effort, schema, signal, onText = () => {}, onModel = () => {}, spawnProcess = spawn }) {
+// images: optional [{ data: <base64 JPEG>, label }] shown to Claude before the prompt text, in order.
+export function runVerifiedClaude({ prompt, system, model, effort, schema, images, signal, onText = () => {}, onModel = () => {}, spawnProcess = spawn }) {
+  const withImages = Array.isArray(images) && images.length > 0;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new DOMException('Interrupted', 'AbortError'));
-    const child = spawnProcess(claudeBin, claudeArgs({ system, model, effort, schema }), {
+    const child = spawnProcess(claudeBin, claudeArgs({ system, model, effort, schema, images: withImages }), {
       env: subscriptionEnvironment(), stdio: ['pipe', 'pipe', 'pipe'], shell: false
     });
     let lineBuffer = '', text = '', result, finished = false, stderr = '';
@@ -98,6 +102,9 @@ export function runVerifiedClaude({ prompt, system, model, effort, schema, signa
       else if (!result || (schema ? !result.structured_output : !text.trim())) finish(new Error('Claude returned no completed response. Nothing was substituted.'));
       else finish();
     });
-    child.stdin.end(prompt);
+    if (!withImages) child.stdin.end(prompt);
+    else child.stdin.end(JSON.stringify({ type: 'user', message: { role: 'user', content: [
+      ...images.flatMap(i => [...(i.label ? [{ type: 'text', text: i.label }] : []), { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: i.data } }]),
+      { type: 'text', text: prompt }] } }) + '\n');
   });
 }

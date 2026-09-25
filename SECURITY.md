@@ -18,6 +18,14 @@ The studio is a local tool. The backend listens only on `127.0.0.1`, and request
 
 **Known limitation:** ffmpeg takes the RTMPS destination, which includes the stream key, as a command-line argument. While a stream is running, other accounts on the same computer can see it in the process list. Use a single-user machine for streaming, and reset the key in X if in doubt.
 
+## Camera stills
+
+While **Claude sees you** is on (the default is "few"), the page sends a small JPEG still from your raw camera to the local backend once a second.
+- The backend keeps only the last 60 seconds in memory.
+- It attaches the stills chosen for each reply to that Claude call, through Claude Code's streaming input. They go to Anthropic like the rest of the conversation.
+- The stills that were sent are saved beside the recording in `vision/`, and nothing else is kept.
+- Set the level to **Off** to stop sending stills.
+
 ## Generated code
 
 Scene and backdrop programs written by Claude run in a sandboxed frame. The frame has an opaque origin, allows scripts only, and its content security policy is `connect-src 'none'`: no network, no storage, no access to the studio page. Code is compile-checked before it is served.

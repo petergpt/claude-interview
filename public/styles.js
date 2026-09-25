@@ -10,7 +10,7 @@
 import { express } from './expression.js';
 import { clawd3d } from './char-clawd.js';
 import { pixelClawd } from './char-pixel.js';
-import { cafeCharacter, background as cafeWorld } from './char-cafe.js';
+import { cafeCharacter, cafeSet, background as cafeWorld } from './char-cafe.js';
 import { sunCharacter, world as sunWorld } from './char-sun.js';
 import { bloomCharacter, bloomWorld } from './char-bloom.js';
 
@@ -165,14 +165,14 @@ function halftone(ctx, st, box, a) {
 }
 
 export const STYLES = {
+  cafe: { name: 'Café', paper: '#e9d8bc', clay: '#e3875a', eye: '#221812', ink: '#e3875a', second: '#a33d33', text: '#2a2320', grain: false, avatar: cafeCharacter, set: cafeSet },
   clawd: { name: 'Clawd', paper: '#f3eadf', clay: '#dc7d58', eye: '#211b17', ink: '#dc7d58', second: '#3a342f', text: '#3a342f', grain: true, avatar: clawd3d },
   bloom: { name: 'Bloom', paper: '#fbf8ee', clay: '#dc7656', eye: '#111111', ink: '#dc7656', second: '#caa8d8', text: '#111111', grain: false, avatar: bloomCharacter },
   pixel: { name: '8-bit', paper: '#0b0a1a', clay: '#d97757', eye: '#171320', ink: '#d97757', second: '#f3d27a', text: '#efe6cc', grain: false, avatar: pixelClawd },
-  cafe: { name: 'Café', paper: '#e9d8bc', clay: '#e3875a', eye: '#221812', ink: '#e3875a', second: '#a33d33', text: '#2a2320', grain: false, avatar: cafeCharacter },
   sun: { name: 'Sun', paper: '#2e3470', clay: '#e5895d', eye: '#18110e', ink: '#e5895d', second: '#f3d27a', text: '#f4efe2', grain: false, avatar: sunCharacter },
   flock: { name: 'Flock', paper: '#121316', clay: '#df7f59', eye: '#121316', ink: '#df7f59', second: '#f3e6d0', text: '#f3e6d0', grain: false, avatar: flock },
   riso: { name: 'Riso', paper: '#f3eee4', ink: '#ff4f7a', second: '#1f3fb3', text: '#1d2a55', grain: true, avatar: halftone },
-  ink: { name: 'Ink', paper: '#efe9dd', ink: '#bf5b3a', second: '#3a342f', text: '#3a342f', grain: true, avatar: thread },
+  ink: { name: 'Ink', paper: '#efe9dd', ink: '#bf5b3a', second: '#3a342f', text: '#3a342f', grain: true, avatar: thread }
 };
 export const LEGACY_STYLES = { face: 'clawd', nocturne: 'sun' };
 
