@@ -1,10 +1,10 @@
 {
-  "name": "claude-interview",
+  "name": "speaking-to-ais",
   "version": "0.1.0",
-  "description": "A hands-free, recorded video-call conversation with Claude: Claude Code for the thinking, ElevenLabs for voice and transcription, and a generated visual room.",
+  "description": "Speaking to AIs: a local recorded conversation with Claude and Astra, using your own subscriptions and ElevenLabs voices.",
   "license": "MIT",
   "type": "module",
-  "keywords": ["claude", "claude-code", "voice", "conversation", "elevenlabs", "recording"],
+  "keywords": ["claude", "claude-code", "codex", "astra", "voice", "conversation", "elevenlabs", "recording"],
   "engines": {
     "node": ">=22"
   },

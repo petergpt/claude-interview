@@ -1,11 +1,12 @@
+import { voiceStrip } from './audio.js';
 export class Broadcast {
   constructor({ canvas, getAudio, ensureDevices, request, notify }) {
     Object.assign(this, { canvas, getAudio, ensureDevices, request, notify });
     this.active = false; this.pending = 0; this.token = 0;
     // Optional and advanced, so it lives collapsed near the end of Settings, styled like the other sections.
-    const section = document.createElement('details'); section.id = 'broadcast-settings'; section.className = 'more';
+    const section = document.createElement('details'); section.id = 'broadcast-settings'; section.className = 'more'; section.open = true;
     section.innerHTML = `<summary>Stream to X</summary>
-      <p class="fine">1080p · 30 fps · both voices. Only the interview frame is sent.</p>
+      <p class="fine">1080p · 30 fps · all voices. Only the call frame is sent.</p>
       <label>X RTMPS server<input id="stream-url" type="url" autocomplete="off" spellcheck="false" placeholder="RTMPS server from X Live Studio"></label>
       <p id="stream-key-state" class="fine">The stream key stays in the backend: run <code>./interview stream-key set</code>.</p>
       <div class="checks"><label class="check inline"><input id="stream-quiet" type="checkbox" checked> Reduce microphone noise during silence</label></div>
@@ -13,7 +14,7 @@ export class Broadcast {
       <p id="stream-level" class="fine">Microphone meter appears while sending.</p>
       <div class="row two"><button id="stream-test" class="secondary" type="button">Test locally</button><button id="stream-start" class="secondary" type="button">Send to X</button><button id="stream-stop" class="secondary" type="button" disabled>Stop</button></div>
       <p id="stream-status" class="fine" role="status">Not sending</p>`;
-    document.querySelector('#settings .panel-body').insertBefore(section, document.querySelector('#recovery'));
+    document.querySelector('#broadcast-mount').append(section);
     this.el = id => document.getElementById(id);
     // The server address is not secret, so it is remembered here; the key never reaches the page.
     try { this.el('stream-url').value = localStorage.getItem('claude-interview.stream-url') || ''; } catch {}
@@ -26,7 +27,7 @@ export class Broadcast {
     this.el('stream-calibrate').onclick = async () => {
       try {
       if (!(await this.ensureDevices())) return;
-      await this.getAudio().stream.getAudioTracks()[0].applyConstraints({ autoGainControl: false });
+      await this.getAudio().stream.getAudioTracks()[0]?.applyConstraints({ autoGainControl: false });
       await this.getAudio().ctx.resume(); await this.setupAudio(); this.sourcesChanged();
       this.quietSamples = []; this.el('stream-calibrate').disabled = true;
       this.setStatus('Stay quiet for 3 seconds…');
@@ -60,10 +61,9 @@ export class Broadcast {
     this.micGain = ctx.createGain(); this.micGain.gain.value = 0.85;
     this.expander.connect(this.micGain);
     this.voiceGain = ctx.createGain(); this.voiceGain.gain.value = 0.85;
-    this.limiter = ctx.createDynamicsCompressor(); this.limiter.threshold.value = -3; this.limiter.knee.value = 3;
-    this.limiter.ratio.value = 12; this.limiter.attack.value = 0.003; this.limiter.release.value = 0.15;
-    this.micGain.connect(this.limiter); this.voiceGain.connect(this.limiter);
-    this.dest = ctx.createMediaStreamDestination(); this.limiter.connect(this.dest);
+    this.mixStrip = voiceStrip(ctx);
+    this.micGain.connect(this.mixStrip.input); this.voiceGain.connect(this.mixStrip.input);
+    this.dest = ctx.createMediaStreamDestination(); this.mixStrip.output.connect(this.dest);
   }
   sourcesChanged() {
     if (!this.highpass) return;
@@ -89,7 +89,7 @@ export class Broadcast {
       await this.setupAudio(); this.sourcesChanged();
       const { stream } = this.getAudio();
       // Do not let automatic gain raise room hiss during pauses.
-      await stream.getAudioTracks()[0].applyConstraints({ autoGainControl: false }).catch(() => {});
+      await stream.getAudioTracks()[0]?.applyConstraints({ autoGainControl: false }).catch(() => {});
       const mime = ['video/webm;codecs=h264,opus', 'video/webm;codecs=vp8,opus'].find(x => MediaRecorder.isTypeSupported(x));
       if (!mime) throw new Error('This browser cannot encode the stream.');
       this.setStatus('Starting encoder…');

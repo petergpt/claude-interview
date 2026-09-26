@@ -4,6 +4,8 @@ Read README.md, docs/api.md and CONTRIBUTING.md first. The backend is `src/` (No
 
 - Credentials only ever live in the backend (Keychain or `.env`). Never add a key field to the UI and never put a secret in a process argument you control.
 - Claude runs through the user's installed Claude Code CLI (`src/claude.mjs`); keep the subscription login the default and do not extract OAuth credentials.
+- Astra runs through the user's Codex ChatGPT subscription (`src/codex.mjs`). Never substitute an API key. Each participant keeps its own native session; only delivered conversation crosses participants.
+- Extend `public/participants.js` for common participant controls, prompts, routing and stems; keep provider-specific capabilities in their adapters.
 - Preserve raw recordings and the difference between generated and played speech.
 - Run `npm test` after changing authentication, speech, interruption or recording logic. Don't claim a microphone, camera or listening check passed unless you actually ran it.
 - Don't restart the backend while a call is active (`./interview status` shows `activeSession`).

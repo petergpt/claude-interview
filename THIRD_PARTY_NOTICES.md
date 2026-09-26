@@ -22,3 +22,18 @@ The studio calls the following services under your own accounts and their terms.
 The recommended voices are ElevenLabs' stock voices, and their preview clips are fetched from ElevenLabs when you play them.
 
 "Claude" and the Clawd character are trademarks of Anthropic.
+
+
+## Codex identity
+
+OpenAI and Codex marks belong to OpenAI. This project's MIT license covers its
+code and original character artwork; it does not grant rights to those marks.
+The mark identifies the Codex subscription integration.
+
+`public/codex-brand.png` is the unmodified original blue Codex branding from
+https://openai.com/codex/get-started/ (retrieved 2026-09-26). The app icon is framed
+from this artwork using CSS. Source asset:
+https://images.ctfassets.net/kftzwdyauwt9/4qyHvm6xZ6G2r2VawnGJgd/f52eeb2debad385ebe0d381d6dde5970/codex-seo-image.png?fit=fill&h=900&w=1600
+
+Astra is original animated character art inspired by the cloud silhouette and
+blue palette of that Codex identity; she is not an official OpenAI mascot.

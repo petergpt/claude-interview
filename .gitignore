@@ -8,3 +8,6 @@ artifacts/
 prompts/conversation.md
 node_modules/
 .DS_Store
+
+prompts/codex.md
+public/astra-study.*

@@ -1,16 +1,11 @@
-# Claude Interview
+# Speaking to AIs
 
-A hands-free, recorded video call with Claude, set up like a talk show.
+A local, recorded voice call with the AI participants you select.
 
-- **Your camera** sits on the left.
-- **Claude is the host** on the right: an animated character (a flower-headed café regular by default) that reacts as the conversation goes. It laughs, doubts, lights up, gets flustered, waves, and sips its coffee between turns.
-- **Pictures of what you're talking about** are painted live on a screen on the set beside it.
-- **Claude can see you** through your camera and answers in an expressive voice. You can interrupt it just by speaking.
-- **Everything is recorded locally** in edit-ready form.
-
-- **Claude** runs through your own installed [Claude Code](https://code.claude.com) CLI, signed in to your Claude plan (or an Anthropic API key, if you prefer).
-- **ElevenLabs** provides speech recognition (Scribe v2 realtime) and the voice (Eleven v3 conversational).
-- **Everything else is local**: a small Node server on `127.0.0.1` with no npm dependencies, and a browser room in Chrome.
+- **Claude** uses your installed Claude Code CLI; **Astra** uses Codex with your ChatGPT subscription. The browser defaults to **Opus 5.5** and **GPT-6 Astra / Low**, with model and thinking controls for each.
+- Each participant has its own animated avatar, voice, editable prompt, and native conversation session. They see the shared transcript and optional call images while retaining their separate context.
+- Participants can answer each other without waiting for another human turn. Speak or press Interrupt to take the floor; mute only stops new microphone input.
+- **ElevenLabs** supplies transcription and speech. Recording, playback, settings, and the room run locally in a small Node server and browser, with no npm dependencies.
 
 ## What you need
 
@@ -20,9 +15,10 @@ A hands-free, recorded video call with Claude, set up like a talk show.
 | Browser | Chrome or another Chromium browser (camera, Web Audio, `MediaRecorder` with H.264). |
 | Node.js | 22 or newer. |
 | Claude | [Claude Code](https://code.claude.com/docs/en/setup) installed and signed in with a Claude plan, **or** an Anthropic API key (see [API-key mode](#api-key-mode)). |
+| Astra (optional) | Codex CLI installed and signed in with `codex login` using your ChatGPT subscription. |
 | ElevenLabs | An account and API key with **Text to Speech**, **Speech to Text** and **Voices: read** permissions. Real conversations use credits quickly, so a paid plan is realistic. |
 | ffmpeg | Optional. Needed only for terminal `talk` mode and live streaming. |
-| Headphones | Strongly recommended, so Claude's voice isn't transcribed as yours. |
+| Headphones | Strongly recommended, so the agents' voices aren't transcribed as yours. |
 
 ## Quick start
 
@@ -37,19 +33,14 @@ open http://127.0.0.1:4747
 
 On Linux or Windows, or if you'd rather not use Keychain, copy `.env.example` to `.env` and set `ELEVENLABS_API_KEY` there. On Windows, use `npm run interview -- up` in place of `./interview up`. On macOS, double-clicking **Start Studio.command** runs `up` and opens the page.
 
-In the page, allow the camera and microphone, optionally type your name in **Settings**, and press **Start**. Claude greets you, then just talk. By default Claude sees a few stills from your camera with each of your turns; change that under **Settings → Claude sees you**.
+Choose available agents under **Participants**, select your devices, then press **Start**.
 
-- **During a call:** Mute (M), Interrupt (I), Mark a moment (K), Mirror (V), Visual (X), Transcript (T), Captions (C), Clean frame for screen capture (F), End.
-- **Settings (S)**, available at any time:
-  - Model and thinking level.
-  - Claude's look: Café (the default), Clawd papercraft, Bloom, 8-bit, Sun, Flock, Riso or Ink.
-  - Claude sees you: off, still, few, more or live. This sets how many stills from your camera go with each of your turns, from one to about one a second.
-  - Generated visuals: off, when useful, or every reply.
-  - Your background: camera, blur, or the conversation's own generated backdrop.
-  - Voice, with samples.
-  - Claude's system prompt, which you can edit.
+- **Agents:** model, thinking, voice previews, and a separate prompt editor for each participant.
+- **Room:** devices, audio balance, topic, opening speaker, vision, and optional artwork and camera effects.
+- **Streaming:** local recording, stream controls, and recovery when a save needs attention.
+- **During a call:** Mute (M), Interrupt (I), Mark (K), Mirror (V), Visual (X), Transcript (T), Captions (C), Clean frame (F), and End.
 
-Outside a call, Claude's eyes follow your cursor. Click on Claude and it giggles; poke it too often and it gets fed up.
+**Audio balance** has a separate trim for your microphone and each agent. It applies to browser voice playback, the mixed recording, voice stems, and streaming. Peak compression and a final ceiling protect loud transients. Levels start at 0 dB and are saved only on this installation; raw camera audio and recognition input are unchanged. Set the trims for your microphone and selected voices rather than assuming every setup has the same level.
 
 Check setup at any time with `./interview status`. It reports readiness and never prints keys.
 
@@ -58,11 +49,11 @@ Check setup at any time with `./interview status`. It reports readiness and neve
 ```
 Chrome page ──16 kHz PCM, camera stills──▶ local backend ──▶ ElevenLabs Scribe (turn detection)
      ▲                            │
-     │                            ├──▶ claude -p (your Claude Code)  ──text──▶ ElevenLabs v3 ──24 kHz PCM──┐
+     │                            ├──▶ Claude Code / Codex native sessions  ──text──▶ ElevenLabs v3 ──24 kHz PCM──┐
      └──────── SSE: text, audio, captions, scenes ◀──────────────────────────────────────────────────────┘
 ```
 
-- The backend owns every credential, the transcription session and turn detection. The page captures audio, plays Claude's reply through Web Audio, reports exactly how much was actually heard, and records.
+- The backend owns every credential, the transcription session and turn detection. The page captures audio, plays each participant's reply through Web Audio, reports exactly how much was actually heard, and records.
 - **Claude's reactions** come from real events, not a script:
   - delivery cues in its reply, and the tone of the words it's actually saying (a small, readable word list in `public/emotion.js`);
   - what you say, and your live mic;
@@ -70,7 +61,7 @@ Chrome page ──16 kHz PCM, camera stills──▶ local backend ──▶ Ele
   - small habits between turns.
 
   A shared spring-based emotion engine (`public/expression.js`) turns these into faces, petals, gestures and body language.
-- **Vision:** the page sends one small still from your camera each second, and the backend keeps the last minute in memory. When Claude replies, the stills for your chosen level go with it as images through Claude Code's streaming input.
+- **Vision:** the page samples your chosen call view or camera once a second. The backend keeps a one-minute buffer and attaches selected stills to each participant's reply, with source and timing labels. Exactly those images are saved with the recording.
 - **Pictures** are drawn in two passes:
   1. A quick sketch by Sonnet, started while you're still talking. It usually appears as Claude begins to answer.
   2. The finished picture by Opus, developed from that sketch and crossfaded over it about half a minute later.
@@ -78,7 +69,7 @@ Chrome page ──16 kHz PCM, camera stills──▶ local backend ──▶ Ele
   The code runs in a sandboxed frame with no network access, and the page composites it into the recorded frame.
 - Your background is cut out on your machine with Google's MediaPipe selfie segmenter, bundled in `public/vendor/`.
 
-Each reply is one Claude call; at the default vision level it carries about 1,300 extra tokens of camera stills. With visuals on, each new picture adds a Sonnet sketch and an Opus finishing call, and the backdrop behind you is an occasional extra call. All of these count toward your plan's usage.
+Each spoken reply uses the selected participant's model; shared images also count toward that provider's usage. With visuals on, each new picture adds a Sonnet sketch and an Opus finishing call, and the backdrop behind you is an occasional extra call. All of these count toward your plan's usage.
 
 ## Recordings
 
@@ -88,12 +79,12 @@ Every call is saved under `recordings/<session-id>/`:
 | --- | --- |
 | `stage.webm` / `.mp4` | The composed 1920×1080 call, as seen on screen |
 | `user-camera.webm` / `.mp4` | Your raw camera and microphone |
-| `user-voice.wav`, `claude-voice.wav` | Lossless 48 kHz stems on one clock: your mic as captured (silent while muted) and exactly what Claude played. Use these for editing. |
+| `user-voice.wav`, `claude-voice.wav`, `codex-voice.wav` | Lossless stems on the browser audio clock: your mic (silent while muted) and each agent after audio balance. Use these for editing. |
 | `user-microphone.wav` | The 16 kHz audio sent to recognition |
-| `claude-<turn>.wav` | Each generated reply. It may include an unheard ending if you interrupted. |
+| `claude-<turn>.wav`, `codex-<turn>.wav` | Each generated reply. It may include an unheard ending if you interrupted. |
 | `session.json`, `events.jsonl` | Transcript, model, voice, timings, interruptions, markers, and generated vs. played seconds |
 | `scenes/`, `backdrops/` | The generated visual programs: each picture's quick sketch (`scene-NNN-sketch.js`) and its finished version (`scene-NNN.js`) |
-| `vision/` | The camera stills Claude was actually shown, listed against each reply as `seen` |
+| `vision/` | The stills each participant was actually shown, listed against each reply as `seen` |
 
 If a tab closes mid-call, the browser keeps backups, and the page recovers them into the session folder the next time it opens. `./interview review <session-id>` asks Claude for proposed highlights and cuts. It writes a new `annotations-*.json` and never alters the originals.
 
@@ -105,6 +96,7 @@ If a tab closes mid-call, the browser keeps backups, and the page recovers them 
 ./interview key set               ElevenLabs key (hidden prompt → Keychain)
 ./interview talk [--name Ada]     Terminal-only call (macOS; mic via ffmpeg, playback via ffplay)
 ./interview say 'words'           Type a turn into the active call
+./interview mix [user|claude|codex dB]  Inspect or change browser audio balance
 ./interview interrupt | mute | unmute | mark | stop
 ./interview sessions | session <id> | events
 ./interview review <id>
@@ -136,7 +128,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ### Streaming to X (optional)
 
-Settings → **Stream to X** sends the composed frame with both voices over RTMPS, using ffmpeg.
+Settings → **Streaming → Stream to X** sends the composed frame with all selected voices over RTMPS, using ffmpeg.
 
 - Put the stream key in the backend with `./interview stream-key set`, or `X_STREAM_KEY` in `.env`. The page never receives it.
 - **Test locally** records a 12-second check to `.runtime/stream-checks/` first.
@@ -157,9 +149,78 @@ npm test    # node:test, no dependencies
 
 - `src/` is the backend: server, Claude and ElevenLabs clients, scene director, streaming.
 - `public/` is the room: stage compositor, characters and their emotion engine, audio, recording.
-- `prompts/` holds Claude's instructions. `prompts/conversation.default.md` is tracked; your edits go to the untracked `prompts/conversation.md`.
+- `prompts/` holds participant instructions. `conversation.default.md` and `codex.default.md` are tracked; editable `conversation.md` and `codex.md` stay local.
+- `public/participants.js` supplies the roster used by settings, prompt routes, turn scheduling, native context allocation, and recording channels. Adding a provider still requires its adapter, model catalogue, and avatar renderer; common flows do not assume exactly two agents.
 - The API is documented in [docs/api.md](docs/api.md), and [CONTRIBUTING.md](CONTRIBUTING.md) lists the ground rules.
 
 ## License
 
 MIT, see [LICENSE](LICENSE). Bundled third-party code is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). "Claude" and the Clawd character are trademarks of Anthropic. The code license doesn't grant rights to those marks.
+
+### Choose participants
+
+Click **Participants** to select **Claude**, **Astra**, or **both**, before or during
+a call. Connected agents are marked Available. The stage follows your selection,
+and your choices are remembered. Keep at least one agent in an active call.
+Astra defaults to **GPT-6 Astra / Low**. Change each agent’s model, thinking level,
+and ElevenLabs voice in **Settings → Agents**; changes apply to the next reply. Your
+existing ChatGPT subscription login powers Codex (`codex login status` should say
+“Logged in using ChatGPT”). Speech and transcription still use ElevenLabs.
+
+Selected agents receive the shared transcript. Say “Claude” or “Codex” / “Astra” to
+address one; the common transcription “Astro” also reaches Astra. With both present,
+they can answer each other and continue a conversation without another human prompt.
+Each participant receives an opening to speak and can choose to remain silent.
+Speak or press **Interrupt** to stop the exchange, including between speakers.
+Default instructions describe identity, call context and speech/vision mechanics;
+they do not prescribe personality, turn length, questions or disagreement. The
+models choose what to say, while the app controls speaking order and playback.
+
+The listener prepares one text reply while the current voice plays. It enters the
+conversation only after confirmed playback; interrupted or outdated preparation is
+discarded. Speech uses one queue and separate voice stems. Either agent can join or
+leave mid-call. An Astra-only call needs no Claude login or Claude requests.
+
+Astra is a blue, cloud-shaped storybook character based on the original
+[Codex app identity](https://openai.com/codex/get-started/), with ink outlines,
+pencil texture, expressive eyes, speech-driven mouth shapes, and spring-driven
+hands. All participant names sit above their tiles. Jessica, ElevenLabs' female
+conversational voice, is the default; saved voice choices are retained.
+
+With **Room → Conversation visuals** on, Astra paints her own animated setting
+through the selected Codex model and thinking level. It runs independently of
+speech, keeps the current setting when it fits, and considers a change at most
+once a minute. The illustrated observatory is visible immediately while the first
+painting arrives. Generated backgrounds count toward the Codex subscription.
+Turning visuals off or removing Astra stops her painter. The human's camera
+background remains a separate control.
+
+In **Room → Share with the agents**, choose the call view (the human and avatars)
+or just the camera. **Still** shares one image per reply by default; **Off** shares
+none. Both agents receive the labelled conversation and current call context. They
+know avatars are illustrations, and that they receive snapshots rather than
+continuous vision. The shared call canvas includes no desktop or settings UI.
+Camera backgrounds default to the original camera; optional effects are tucked
+under **Camera effects & resolution**.
+
+Settings are grouped into **Agents**, **Room** (devices, appearance and call
+behavior), and **Streaming** (recordings and broadcast). For a keyboard-only call,
+choose **No microphone · type instead** and **No camera**, then Start.
+
+CLI: `./interview talk --codex --codex-model gpt-6-astra --codex-effort low`.
+Use `./interview codex on` or `./interview codex off` for an active call.
+The integration uses [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive/)
+with a private native conversation for each participant in each call. Claude Code
+resumes Claude's session; Codex resumes Astra's thread. Each retains its own history,
+observations and provider-managed reasoning state, with native context compaction
+on long calls. New room speech and playback corrections are added as incremental
+updates. Reasoning and unspoken drafts are never shared with the other participant
+or included in captions, speech or the recording transcript.
+
+The participants run in separate, dedicated working directories with tools,
+plugins, MCP, project instructions and unrelated personal memories disabled.
+The providers keep their native session files; the recording folder stores only
+the session IDs under `agent-sessions/`. Calls start separate sessions, and leaving
+and rejoining the same call preserves that participant's session. Background
+visual and voice-selection helpers remain one-off requests. This reuses CLI authentication;
+it does not extract credentials, alter Codex settings, or fall back to API billing.

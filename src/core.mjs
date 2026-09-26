@@ -27,11 +27,12 @@ export function isSubscription(status) {
 }
 
 export function cleanSpeech(text) {
-  return text.replace(/\[[^\]\n]{1,80}\]/g, '').replace(/\s+/g, ' ').trim();
+  return text.replace(/\[[^\]\n]{1,80}\]/g, '').replace(/\[[^\]]*$/, '').replace(/\s+/g, ' ').trim();
 }
 
 export class SpeechChunks {
   buffer = '';
+  started = false;
   add(text, final = false) {
     this.buffer += text;
     const chunks = [];
@@ -42,7 +43,7 @@ export class SpeechChunks {
         const c = this.buffer[i];
         if (c === '[') inTag = true;
         if (c === ']') inTag = false;
-        if (!inTag && i >= 70 && /[.!?…]/.test(c) && /\s/.test(this.buffer[i + 1] || '')) { cut = i + 1; break; }
+        if (!inTag && i >= (this.started ? 70 : 24) && /[.!?…]/.test(c) && /\s/.test(this.buffer[i + 1] || '')) { cut = i + 1; break; }
         if (!inTag && i >= 260 && /\s/.test(c)) { cut = i + 1; break; }
       }
       if (cut < 0 && final) {
@@ -52,7 +53,7 @@ export class SpeechChunks {
       if (cut < 0) break;
       const part = this.buffer.slice(0, cut);
       this.buffer = this.buffer.slice(cut);
-      if (part.trim()) chunks.push(part);
+      if (part.trim()) { chunks.push(part); this.started = true; }
     }
     return chunks;
   }
@@ -76,15 +77,28 @@ export function allowRequest(req, port) {
   return true;
 }
 
-export function historyForClaude(turns) {
-  return turns.map(t => ({
-    speaker: t.speaker, text: t.text, id: t.id, status: t.status,
-    ...(t.speaker === 'claude' ? {
-      generated_audio_seconds: t.audio_seconds || 0,
-      played_audio_seconds: t.played_seconds || 0,
-      delivery_note: t.status === 'interrupted'
-        ? 'They cut in, so they may not have heard the end of this.'
-        : t.playback_complete ? 'Heard in full.' : 'May not have been heard in full.'
-    } : {})
-  }));
+// The archive keeps complete generated replies. Shared conversational context contains only
+// delivered speech, except the one reply a listener is preparing to answer after playback.
+export function historyForConversation(turns, { expectedTurnId } = {}) {
+  return turns.filter(t => t.status !== 'skipped').map(t => {
+    if (!['claude', 'codex'].includes(t.speaker)) return { speaker: t.speaker, text: t.text };
+    const delivered = t.playback_complete || t.status === 'delivered';
+    const expected = t.id === expectedTurnId && !['interrupted', 'error'].includes(t.status);
+    const text = delivered || expected ? t.text : t.heard_text || '';
+    return { speaker: t.speaker, text,
+      visual_context: { frames: t.seen?.length || 0, ...(t.seen?.length ? { source: t.seen[0].source || 'camera', captured_at_ms: t.seen.map(f => f.at_ms) } : {}) },
+      ...(!delivered && !expected ? { played_audio_seconds: t.played_seconds || 0 } : {}),
+      delivery_note: delivered ? 'Heard in full.' : expected ? 'Still playing; this reply must finish before you speak.'
+        : text ? 'Interrupted. Only these words were heard; the unsaid ending is omitted.'
+        : t.played_seconds > 0 ? 'Interrupted. Some audio played, but its exact words are unavailable. Do not infer the ending.'
+        : 'Not heard. No spoken content to respond to.' };
+  });
+}
+
+// ElevenLabs alignment plus the playback clock gives a conservative, whole-word prefix.
+export function heardSpeech(alignment, seconds) {
+  let raw = '', i = 0;
+  for (; i < alignment.length && alignment[i].end <= seconds; i++) raw += alignment[i].ch;
+  if (/\p{L}|\p{N}/u.test(alignment[i]?.ch || '') && /[\p{L}\p{N}]$/u.test(raw)) raw = raw.replace(/\S+$/, '');
+  return cleanSpeech(raw);
 }

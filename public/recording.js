@@ -106,7 +106,7 @@ export async function recordPcm({ sessionId, kind, ctx, source, api, clientMs, o
     async stop() {
       await new Promise(resolve => { flushed = resolve; node.port.postMessage('stop'); setTimeout(resolve, 500); });
       stopped = true; node.port.onmessage = null;
-      try { source.disconnect(node); } catch {} node.disconnect();
+      try { source.disconnect(node); } catch {} node.disconnect(); sink.disconnect();
       await queue;
       if (firstError) throw firstError;
       await api('event', { type: 'media-complete', name, bytes: uploaded, sample_rate: rate, client_ms: clientMs() });

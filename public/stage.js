@@ -11,6 +11,8 @@
 import { STYLES, drawAvatar, worldBackdrop } from './styles.js';
 import * as seg from './segment.js';
 import { drawBaseScene } from './scenes.js';
+import { AGENTS, agentById } from './participants.js';
+import { drawCodex } from './char-codex.js';
 
 export const W = 1920, H = 1080;
 const SERIF = '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif';
@@ -19,7 +21,7 @@ const C = {
   room: '#171513', tile: '#211e1b', paper: '#efe9dd', ink: '#bf5b3a', graphite: '#3a342f',
   caption: '#ece5d8', captionClaude: '#f1e2d3', muted: '#e5484d', label: 'rgba(20,18,16,.62)',
 };
-const M = 56, GAP = 32, TILE_W = (W - 2 * M - GAP) / 2;
+const TOP = 120, M = 56, GAP = 32, TILE_W = (W - 2 * M - GAP) / 2;
 
 const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
 const approach = (v, target, rate, dt) => v + (target - v) * (1 - Math.exp(-rate * dt));
@@ -48,8 +50,10 @@ export class Stage {
     // Live inputs, written by the app from real events.
     this.claude = 'offline';          // offline | ready | listening | waiting | thinking | speaking | ended | error
     this.userSpeaking = false; this.userMuted = false; this.cameraOn = false; this.mirror = false; this.showCaptions = true;
-    this.levels = { user: () => 0, claude: () => 0 };
-    this.captions = { user: { text: '', at: 0 }, claude: { text: '', at: 0 } };
+    this.levels = Object.fromEntries(['user', ...AGENTS.map(a => a.id)].map(id => [id, () => 0]));
+    this.agentIds = ['claude']; this.codex = 'ready'; this.codexMood = null; this.codexMouth = { open: 0, round: 0 };
+    this.cs = { think: 0, listen: 0, listenState: 0, speak: 0, alive: 1, mouth: { open: 0, round: 0 } };
+    this.captions = Object.fromEntries(['user', ...AGENTS.map(a => a.id)].map(id => [id, { text: '', at: 0 }]));
     this.interruptedAt = -1e9;
     // Smoothed drawing state.
     this.s = { think: 0, listen: 0, listenState: 0, speak: 0, alive: 0, captions: 1, userRing: 0, rot: 0, scene: 0, bespoke: 0, mouth: { open: 0, round: 0 } };
@@ -67,15 +71,24 @@ export class Stage {
     this.last = performance.now();
     this.grain = this.makeGrain();
   }
-  interrupted() { this.interruptedAt = performance.now(); }
-  setMood(name) { this.mood = { name, at: performance.now() }; }
+  interrupted(speaker = 'claude') { this[speaker === 'codex' ? 'codexInterruptedAt' : 'interruptedAt'] = performance.now(); }
+  setMood(name, speaker = 'claude') { this[speaker === 'codex' ? 'codexMood' : 'mood'] = { name, at: performance.now() }; }
+  getMood(speaker) { return speaker === 'codex' ? this.codexMood : this.mood; }
+  setMouth(speaker, mouth) { this[speaker === 'codex' ? 'codexMouth' : 'mouthTarget'] = mouth; }
+  pokeCodex() { this.setMood(['giggle', 'wave', 'curious', 'delight'][Math.floor(Math.random() * 4)], 'codex'); }
+  get claudeEnabled() { return this.agentIds.includes('claude'); }
+  get codexEnabled() { return this.agentIds.includes('codex'); }
+  participants() { return ['user', ...this.agentIds]; }
+  tileWidth() { const count = this.participants().length; return (W - 2 * M - GAP * (count - 1)) / count; }
+  tileX(speaker) { return M + this.participants().indexOf(speaker) * (this.tileWidth() + GAP); }
   // A click on Claude: a giggle or a start; poked too often in a short while, it gets fed up.
   poke() {
     const now = performance.now(); this.pokes = (this.pokes || []).filter(p => now - p < 6000); this.pokes.push(now);
     this.setMood(this.pokes.length >= 4 ? 'fed up' : ['giggle', 'surprised', 'giggle', 'delight'][Math.floor(Math.random() * 4)]);
   }
   // Is a canvas point inside Claude's tile? (for pokes)
-  hitClaude(px, py) { const x = M + TILE_W + GAP; return px >= x && px <= x + TILE_W && py >= M && py <= M + 968; }
+  hitClaude(px, py) { const w = this.tileWidth(), x = M + w + GAP; return this.claudeEnabled && px >= x && px <= x + w && py >= TOP && py <= M + 968; }
+  hitCodex(px, py) { const x = this.tileX('codex'); return this.codexEnabled && px >= x && px <= W - M && py >= TOP && py <= M + 968; }
   backchannel() { this.nodAt = performance.now() / 1000; }
   sceneBase(h) { this.pending = h; }                                          // shown once its first frame has drawn
   sceneStandIn(id) {
@@ -96,6 +109,11 @@ export class Stage {
   sceneClear() { if (this.scene) this.scene.leaving = true; this.pending = null; }
   backdropBitmap(id, bitmap) { if (this.backdrop?.id !== id) { this.backdrop?.bitmap?.close(); this.backdrop = { id, bitmap: null, at: performance.now() }; } this.backdrop.bitmap?.close(); this.backdrop.bitmap = bitmap; }
   backdropClear() { this.backdrop?.bitmap?.close(); this.backdrop = null; }
+  codexBackdropBitmap(id, bitmap) {
+    if (this.codexBackdrop?.id !== id) { this.codexBackdropFade?.bitmap?.close(); this.codexBackdropFade = this.codexBackdrop; this.codexBackdrop = { id, bitmap: null, at: performance.now() }; }
+    this.codexBackdrop.bitmap?.close(); this.codexBackdrop.bitmap = bitmap;
+  }
+  codexBackdropClear() { this.codexBackdrop?.bitmap?.close(); this.codexBackdropFade?.bitmap?.close(); this.codexBackdrop = this.codexBackdropFade = null; }
   caption(who, text) { this.captions[who] = { text, at: performance.now() }; }
 
   makeGrain() {
@@ -109,10 +127,18 @@ export class Stage {
     const dt = Math.min(0.1, (now - this.last) / 1000); this.last = now; this.dt = dt;
     const { ctx, s } = this, t = now / 1000;
     const pLevel = this.userMuted ? 0 : clamp(this.levels.user() * 9);
-    const cLevel = clamp(this.levels.claude() * 6);
+    const cLevel = clamp(this.levels.claude() * 6), xLevel = clamp(this.levels.codex() * 6);
+    const cs = this.cs, xs = this.codex;
+    cs.think = approach(cs.think, xs === 'thinking' ? 1 : 0, xs === 'thinking' ? 2 : 5, dt);
+    cs.listenState = approach(cs.listenState, xs === 'listening' ? 1 : 0, 3, dt);
+    cs.listen = approach(cs.listen, xs === 'listening' ? Math.max(pLevel, cLevel) : 0, 10, dt);
+    cs.speak = approach(cs.speak, xs === 'speaking' ? xLevel : 0, 14, dt);
+    cs.alive = approach(cs.alive, ['offline', 'ended', 'error'].includes(xs) ? .35 : 1, 2, dt);
+    cs.mouth.open = approach(cs.mouth.open, xs === 'speaking' ? this.codexMouth.open : 0, 22, dt);
+    cs.mouth.round = approach(cs.mouth.round, this.codexMouth.round, 16, dt);
     const st = this.claude;
     s.think = approach(s.think, st === 'thinking' ? 1 : 0, st === 'thinking' ? 1.6 : 4, dt);
-    s.listen = approach(s.listen, st === 'listening' ? pLevel : 0, 10, dt);
+    s.listen = approach(s.listen, st === 'listening' ? Math.max(pLevel, xLevel) : 0, 10, dt);
     s.speak = approach(s.speak, st === 'speaking' ? cLevel : 0, 14, dt);
     s.alive = approach(s.alive, ['offline', 'ended', 'error'].includes(st) ? 0.35 : 1, 2, dt);
     s.captions = approach(s.captions, this.showCaptions ? 1 : 0, 6, dt);
@@ -126,13 +152,18 @@ export class Stage {
     s.bespoke = approach(s.bespoke, sc?.bitmap ? 1 : 0, 1.5, dt);
     if (sc?.leaving && s.scene < 0.01) { sc.bitmap?.close(); this.scene = null; }
 
-    const tileH = 852 + (968 - 852) * (1 - ease(s.captions));
+    const tileH = 788 + (904 - 788) * (1 - ease(s.captions));
     ctx.fillStyle = C.room; ctx.fillRect(0, 0, W, H);
     ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 14; ctx.fillStyle = C.room;
-    for (const tx of [M, M + TILE_W + GAP]) { roundRect(ctx, tx, M, TILE_W, tileH, 28); ctx.fill(); } ctx.restore();
-    this.drawUser(M, M, TILE_W, tileH, pLevel);
-    this.drawClaude(M + TILE_W + GAP, M, TILE_W, tileH, t, now);
-    if (s.captions > 0.01) this.drawCaptions(M + tileH + 26, now);
+    const tw = this.tileWidth(), positions = Array.from({ length: this.participants().length }, (_, i) => M + i * (tw + GAP));
+    for (const tx of positions) { roundRect(ctx, tx, TOP, tw, tileH, 28); ctx.fill(); } ctx.restore();
+    this.drawUser(M, TOP, tw, tileH, pLevel);
+    const renderers = { claude: this.drawClaude, codex: this.drawCodex };
+    for (const id of this.agentIds) {
+      renderers[id]?.call(this, this.tileX(id), TOP, tw, tileH, t, now);
+      this.agentPlate(this.tileX(id), TOP, tw, tileH, agentById(id)?.name || id, this[id], id === 'claude' ? '#e8ab87' : '#91b1ff');
+    }
+    if (s.captions > 0.01) this.drawCaptions(TOP + tileH + 26, now);
     // a filmic finish over the whole recorded frame: fine moving grain and a soft vignette
     ctx.save(); ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = 0.07;
     ctx.fillStyle = ctx.createPattern(this.grains[Math.floor(now / 42) % 3], 'repeat'); ctx.fillRect(0, 0, W, H); ctx.restore();
@@ -175,7 +206,7 @@ export class Stage {
       ctx.beginPath(); ctx.arc(cx, cy, r + 10 + 18 * level, 0, Math.PI * 2); ctx.stroke();
       ctx.fillStyle = '#2d2925'; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = C.caption; ctx.font = `64px ${SERIF}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('P', cx, cy + 4);
+      ctx.fillText((this.userName || 'You')[0].toUpperCase(), cx, cy + 4);
     }
     ctx.restore();
     // Active-speaker edge: driven by the backend's live transcription of the user, not by raw loudness.
@@ -183,20 +214,22 @@ export class Stage {
       ctx.save(); roundRect(ctx, x + 2, y + 2, w - 4, h - 4, 27);
       ctx.strokeStyle = `rgba(236,229,216,${0.75 * s.userRing})`; ctx.lineWidth = 4; ctx.stroke(); ctx.restore();
     }
-    this.nameplate(x + 22, y + h - 22, this.userName || 'You', this.userMuted ? 'muted' : '', true);
+    this.nameplate(x, y - 18, this.userName || 'You', this.userMuted ? 'muted' : '', true);
   }
 
   nameplate(x, bottom, name, note, dark) {
     const { ctx } = this;
-    ctx.save(); ctx.font = `500 24px ${SANS}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    ctx.save(); ctx.font = `600 40px ${SANS}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    const limit = this.tileWidth() - (note ? 160 : 84);
+    if (ctx.measureText(name).width > limit) { while (name.length && ctx.measureText(name + '…').width > limit) name = name.slice(0, -1); name += '…'; }
     const nw = ctx.measureText(name).width;
-    ctx.font = `600 16px ${SANS}`; const tw = note ? ctx.measureText(note.toUpperCase()).width + 26 : 0;
-    const w = 28 + nw + tw, h = 44, y = bottom - h;
-    if (dark) { roundRect(ctx, x, y, w, h, 22); ctx.fillStyle = C.label; ctx.fill(); }
-    ctx.font = `500 24px ${SANS}`; ctx.fillStyle = dark ? C.caption : C.graphite; ctx.fillText(name, x + 14, y + h / 2 + 1);
+    ctx.font = `600 20px ${SANS}`; const tw = note ? ctx.measureText(note.toUpperCase()).width + 30 : 0;
+    const w = 40 + nw + tw, h = 62, y = bottom - h;
+    // Names live above the artwork, on the quiet frame margin.
+    ctx.font = `600 40px ${SANS}`; ctx.fillStyle = dark ? C.caption : C.graphite; ctx.fillText(name, x + 4, y + h / 2 + 1);
     if (note) {
-      ctx.font = `600 16px ${SANS}`; ctx.fillStyle = C.muted;
-      ctx.letterSpacing = '1.5px'; ctx.fillText(note.toUpperCase(), x + 14 + nw + 14, y + h / 2 + 1);
+      ctx.font = `600 20px ${SANS}`; ctx.fillStyle = C.muted;
+      ctx.letterSpacing = '1px'; ctx.fillText(note.toUpperCase(), x + 4 + nw + 18, y + h / 2 + 1);
     }
     ctx.restore();
   }
@@ -227,6 +260,31 @@ export class Stage {
       if (st.set) { st.set(ctx, { x, y, w, h }, t); this.drawScreen(screen, mix, t, now, st); drawAvatar(ctx, this.style, host, { ...a, noSet: true }); }
       else { ctx.drawImage(worldBackdrop(this.style, Math.round(w), Math.round(h)), x, y, w, h); drawAvatar(ctx, this.style, host, a); this.drawScreen(screen, mix, t, now, st); }
     }
+    ctx.restore();
+  }
+
+  drawCodex(x, y, w, h, t, now) {
+    const { ctx, cs } = this, since = now - (this.codexInterruptedAt ?? -1e9);
+    ctx.save(); roundRect(ctx, x, y, w, h, 28); ctx.clip();
+    const backdropMix = this.codexBackdrop ? ease(clamp((now - this.codexBackdrop.at) / 1600)) : 0;
+    if (backdropMix >= 1 && this.codexBackdropFade) { this.codexBackdropFade.bitmap?.close(); this.codexBackdropFade = null; }
+    drawCodex(ctx, { x, y, w, h }, { t, dt: this.dt, ...cs, rot: t * .3,
+      backdrop: this.sceneHidden ? null : this.codexBackdrop?.bitmap, backdropMix, previousBackdrop: this.sceneHidden ? null : this.codexBackdropFade?.bitmap,
+      gap: since < 900 ? .09 * (1 - since / 900) ** 2 : 0,
+      nod: this.nodAt, mood: this.codexMood && { name: this.codexMood.name, age: (now - this.codexMood.at) / 1000 },
+      pointer: this.pointer && now - this.pointer.at < 2500 && !['thinking', 'speaking'].includes(this.codex)
+        ? { x: (this.pointer.x - x - w / 2) / w, y: (this.pointer.y - y - h * .4) / h } : null });
+    ctx.restore();
+  }
+  agentPlate(x, y, w, h, name, state, color) {
+    const { ctx } = this, speaking = state === 'speaking';
+    if (speaking) { ctx.save(); roundRect(ctx, x + 2, y + 2, w - 4, h - 4, 27); ctx.strokeStyle = color; ctx.lineWidth = 4; ctx.stroke(); ctx.restore(); }
+    ctx.save(); ctx.font = `600 40px ${SANS}`;
+    const note = state === 'thinking' ? 'Thinking' : state === 'speaking' ? 'Speaking' : state === 'listening' ? 'Listening' : state === 'offline' ? 'Offline' : state === 'error' ? 'Disconnected' : state === 'ended' ? 'Call ended' : 'Ready';
+    const nw = ctx.measureText(name).width; ctx.font = `22px ${SANS}`;
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x + 8, y - 49, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.font = `600 40px ${SANS}`; ctx.fillStyle = '#fff9f0'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.fillText(name, x + 29, y - 49);
+    ctx.font = `22px ${SANS}`; ctx.fillStyle = '#e6e9edb0'; ctx.textAlign = 'right'; ctx.fillText(note, x + w - 4, y - 49);
     ctx.restore();
   }
 
@@ -273,11 +331,11 @@ export class Stage {
       const age = now - c.at, alpha = s.captions * clamp(1 - (age - 4500) / 900);
       if (alpha <= 0) return;
       ctx.save(); ctx.globalAlpha = alpha; ctx.font = font; ctx.fillStyle = color; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
-      const lines = wrap(ctx, c.text, TILE_W - 40).slice(-2);
+      const lines = wrap(ctx, c.text, this.tileWidth() - 40).slice(-2);
       lines.forEach((line, i) => ctx.fillText(line, x + 20, top + i * 44));
       ctx.restore();
     };
     draw('user', M, `31px ${SANS}`, C.caption);
-    draw('claude', M + TILE_W + GAP, `33px ${SERIF}`, C.captionClaude);
+    for (const id of this.agentIds) draw(id, this.tileX(id), `${this.agentIds.length > 1 ? 28 : 33}px ${SANS}`, id === 'claude' ? C.captionClaude : '#d5dcff');
   }
 }
