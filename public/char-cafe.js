@@ -141,11 +141,13 @@ export function cafeCharacter(ctx, st, box, a) {
     // ---- a head-and-shoulders portrait: a slim sweater, neck, wrapped scarf, an arm holding the cup and a free arm ----
     const br = E.breath * 3 + E.shrug * 12, lean = E.lean * 20 + E.turn * 12 + shake, pencil = 3.2 * k;
     const P = q => [X(q[0]), Y(q[1])];
-    // torso: rounded shoulders, narrower than the head, running off the bottom of the frame; shoulders rise in a shrug
-    draw(ctx, [[X(-62 + lean), Y(196 - br)], [X(-124 + lean), Y(210 - br)], [X(-172 + lean), Y(238 - br)], [X(-186 + lean * 0.6), Y(284)], [X(-176), Y(356)], [X(-168), Y(420)], [X(-170), Y(470)],
-      [X(170), Y(470)], [X(168), Y(420)], [X(176), Y(356)], [X(186 + lean * 0.6), Y(284)], [X(172 + lean), Y(238 - br)], [X(124 + lean), Y(210 - br)], [X(62 + lean), Y(196 - br)]], { fill: '#b39ad3', shade: lightFromRight, w: pencil });
+    // Keep the portrait anchored to the tile even when a third participant makes it taller and narrower.
+    // Extend just the sweater below the crop; the head, shoulders, hands and cup retain their proportions.
+    const hem = Math.max(470, box.h / (2 * k) + 48), lower = 420 + (hem - 470) * 0.5;
+    draw(ctx, [[X(-62 + lean), Y(196 - br)], [X(-124 + lean), Y(210 - br)], [X(-172 + lean), Y(238 - br)], [X(-186 + lean * 0.6), Y(284)], [X(-176), Y(356)], [X(-168), Y(lower)], [X(-170), Y(hem)],
+      [X(170), Y(hem)], [X(168), Y(lower)], [X(176), Y(356)], [X(186 + lean * 0.6), Y(284)], [X(172 + lean), Y(238 - br)], [X(124 + lean), Y(210 - br)], [X(62 + lean), Y(196 - br)]], { fill: '#b39ad3', shade: lightFromRight, w: pencil });
     ctx.strokeStyle = 'rgba(70,45,90,0.22)'; ctx.lineWidth = 1.6 * k; ctx.lineCap = 'round';        // knit ribbing and two soft folds
-    for (let x = -120; x <= 120; x += 40) { ctx.beginPath(); ctx.moveTo(X(x + lean * 0.3), Y(300)); ctx.quadraticCurveTo(X(x * 1.03 + lean * 0.15), Y(385), X(x * 1.06), Y(470)); ctx.stroke(); }
+    for (let x = -120; x <= 120; x += 40) { ctx.beginPath(); ctx.moveTo(X(x + lean * 0.3), Y(300)); ctx.quadraticCurveTo(X(x * 1.03 + lean * 0.15), Y((300 + hem) / 2), X(x * 1.06), Y(hem)); ctx.stroke(); }
     ctx.strokeStyle = 'rgba(70,45,90,0.35)'; ctx.lineWidth = 2 * k;
     for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(X(s * 134 + lean), Y(270)); ctx.quadraticCurveTo(X(s * 118 + lean * 0.5), Y(304), X(s * 124), Y(342)); ctx.stroke(); }
     // neck: slim, mostly hidden by the lower petals and the scarf

@@ -3,33 +3,46 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Claude Interview</title>
+<title>Speaking to AIs</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body data-phase="lobby">
 <header class="topbar">
-  <div class="wordmark">Claude <span>Interview</span></div>
+  <div class="wordmark">Speaking to AIs</div>
   <div class="chips" aria-live="polite">
     <span class="chip" id="chip-rec" hidden><i class="dot rec"></i><span id="rec-text">Recording</span></span>
     <span class="chip" id="chip-conn"><i class="dot"></i><span id="conn-text">Checking…</span></span>
     <span class="chip" id="chip-stt" hidden><i class="dot"></i><span id="stt-text">Listening</span></span>
-    <span class="chip subtle" id="chip-voice" hidden></span>
+    <div class="participants-control">
+      <button class="icon" id="btn-participants" aria-haspopup="dialog" aria-expanded="false" aria-controls="participants-picker">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 21v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 4v2"/></svg>
+        <span>Participants</span><span class="participant-count" id="participant-count">1</span>
+      </button>
+      <section class="participants-picker" id="participants-picker" role="dialog" aria-labelledby="participants-title" hidden>
+        <header><h2 id="participants-title">Who’s joining?</h2><button class="icon close" id="btn-participants-close" aria-label="Close participants">×</button></header>
+        <div class="participant-options"></div>
+        <button class="link participants-settings" id="btn-participants-settings">Agent settings <span aria-hidden="true">↗</span></button>
+      </section>
+    </div>
     <button class="icon" id="btn-settings" aria-pressed="false" title="Settings (S)" aria-label="Settings">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
       <span>Settings</span>
     </button>
   </div>
 </header>
+<div id="participant-summary" class="participant-summary" aria-label="Selected agents"></div>
 
 <main class="room">
   <div class="frame" id="frame">
-    <canvas id="stage" aria-label="Conversation stage: your camera on the left, Claude on the right"></canvas>
+    <canvas id="stage" aria-label="Conversation stage with your selected participants"></canvas>
     <section class="card" id="summary" hidden aria-labelledby="summary-title">
-      <button class="icon close corner" id="btn-summary-close" aria-label="Close">×</button><h1 id="summary-title">Saved.</h1>
-      <p class="lede" id="summary-lede"></p>
-      <ul class="files" id="summary-files"></ul>
-      <h2>Review</h2>
-      <div class="cmd"><code id="summary-cmd"></code><button id="btn-copy" type="button">Copy</button></div>
+      <button class="icon close corner" id="btn-summary-close" aria-label="Close">×</button>
+      <div role="status">
+        <span class="summary-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path id="summary-symbol" d="m6 12 4 4 8-8"/></svg></span>
+        <h1 id="summary-title">Recording saved</h1>
+        <p class="lede" id="summary-lede">Your conversation is saved on this Mac.</p>
+      </div>
+      <button class="link" id="btn-summary-recover" type="button" hidden>Recovery options</button>
       <button class="primary" id="btn-again" type="button">Done</button>
     </section>
   </div>
@@ -45,7 +58,7 @@
     <button id="btn-mute" aria-pressed="false" title="Mute microphone (M)">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 4l16 16"/></svg>
       <span>Mute</span><kbd>M</kbd></button>
-    <button id="btn-interrupt" title="Stop Claude talking (I)" disabled>
+    <button id="btn-interrupt" title="Pause the conversation (I)" disabled>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z"/></svg>
       <span>Interrupt</span><kbd>I</kbd></button>
     <button id="btn-mark" title="Mark this moment for the edit (K)">
@@ -76,58 +89,49 @@
 
 <aside class="panel" id="settings" hidden aria-label="Settings">
   <header><h2>Settings</h2><button class="icon close" id="btn-settings-close" aria-label="Close settings">×</button></header>
+  <nav class="settings-tabs" role="tablist" aria-label="Settings categories">
+    <button id="tab-agents" type="button" role="tab" aria-selected="true" aria-controls="settings-agents" data-tab="agents">Agents</button>
+    <button id="tab-room" type="button" role="tab" aria-selected="false" aria-controls="settings-room" data-tab="room">Room</button>
+    <button id="tab-streaming" type="button" role="tab" aria-selected="false" aria-controls="settings-streaming" data-tab="streaming">Streaming</button>
+  </nav>
   <div class="panel-body">
     <p class="status" id="lobby-status" hidden></p>
-
-    <section>
-      <label>Your name<input id="inp-name" maxlength="40" autocomplete="nickname" placeholder="You"></label>
-      <button class="secondary" id="btn-devices" type="button" hidden>Allow camera &amp; microphone</button>
-      <div class="row">
-        <label>Microphone<select id="sel-mic" class="precall"></select></label>
-        <div class="meter" aria-hidden="true"><i id="mic-meter"></i></div>
-      </div>
-      <label>Camera<select id="sel-cam" class="precall"></select></label>
-      <div class="field"><span class="lbl">Camera resolution</span><div class="seg" id="seg-res" role="radiogroup" aria-label="Camera resolution"></div></div>
-      <div class="field"><span class="lbl">Claude sees you</span><div class="seg" id="seg-vision" role="radiogroup" aria-label="How much of your camera Claude sees"></div><p class="fine" id="vision-hint"></p></div>
-      <div class="field"><span class="lbl">Your background</span><div class="seg" id="seg-bg" role="radiogroup" aria-label="Your background"></div></div>
-      <div class="checks">
-        <label class="check inline"><input type="checkbox" id="chk-mirror"> Mirror camera</label>
-        <label class="check inline"><input type="checkbox" id="chk-headphones" class="precall"> Headphones on</label>
-      </div>
-    </section>
-
-    <section>
-      <label>Model<select id="sel-model"></select></label>
-      <div class="field"><span class="lbl">Thinking</span><div class="seg" id="seg-effort" role="radiogroup" aria-label="Thinking level"></div></div>
-      <div class="field"><span class="lbl">Look</span><div class="seg" id="seg-style" role="radiogroup" aria-label="Claude's look"></div></div>
-      <div class="field"><span class="lbl">Visuals while talking</span><div class="seg" id="seg-visuals" role="radiogroup" aria-label="Visuals"></div></div>
-      <div class="voice-pick"><label>Voice<select id="sel-voice"></select></label><button type="button" class="play" id="btn-sample" title="Hear a sample" aria-label="Hear a sample of this voice"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button></div>
-    </section>
-
-    <section class="prompt">
-      <div class="field-head"><span class="lbl">Claude’s prompt</span><span class="prompt-actions"><button type="button" class="link" id="prompt-reset">Reset</button><button type="button" class="small" id="prompt-save" disabled>Save</button></span></div>
-      <textarea id="prompt-text" spellcheck="true" aria-label="Claude's prompt"></textarea>
-      <p class="fine">Applies from the next reply. Each reply also gets the topic and the transcript so far.</p>
-    </section>
-
-
-    <details class="more">
-      <summary>More</summary>
-      <label>Topic<input id="inp-topic" maxlength="400" placeholder="Optional"></label>
-      <div class="row two">
-        <label>Who speaks first<select id="sel-opener" class="precall"><option value="claude">Claude</option><option value="user">Me</option></select></label>
-        <label>Pause before reply<select id="sel-silence" class="precall"><option value="1">1.0 s</option><option value="1.5" selected>1.5 s</option><option value="2">2.0 s</option><option value="2.5">2.5 s</option></select></label>
-      </div>
-      <div class="checks"><span class="lbl">Record</span>
-        <label class="check inline"><input type="checkbox" id="chk-rec-camera" class="precall" checked> Camera</label>
-        <label class="check inline"><input type="checkbox" id="chk-rec-stage" class="precall" checked> Full frame</label>
-      </div>
-    </details>
-
-    <section id="recovery" hidden>
-      <span class="lbl">Unsaved recordings</span>
-      <ul id="recovery-list"></ul>
-    </section>
+    <div id="settings-agents" role="tabpanel" aria-labelledby="tab-agents" class="settings-page">
+      <button class="link" id="btn-choose-participants">Choose participants</button>
+      <div id="agent-cards"></div>
+    </div>
+    <div id="settings-room" role="tabpanel" aria-labelledby="tab-room" class="settings-page" hidden>
+      <section>
+        <label>Your name<input id="inp-name" maxlength="40" autocomplete="nickname" placeholder="You"></label>
+        <button class="secondary" id="btn-devices" type="button" hidden>Allow camera &amp; microphone</button>
+        <div class="row"><label>Microphone<select id="sel-mic" class="precall"></select></label><div class="meter" aria-hidden="true"><i id="mic-meter"></i></div></div>
+        <label>Camera<select id="sel-cam" class="precall"></select></label>
+        <div class="checks"><label class="check inline"><input type="checkbox" id="chk-mirror"> Mirror camera</label><label class="check inline"><input type="checkbox" id="chk-headphones" class="precall"> Headphones on</label></div>
+      </section>
+      <section><h3>Audio balance</h3><div id="audio-levels"></div></section>
+      <section>
+        <div class="field"><span class="lbl">Claude’s look</span><div class="seg" id="seg-style" role="radiogroup" aria-label="Claude's look"></div></div>
+        <div class="field"><span class="lbl">Conversation visuals</span><div class="seg" id="seg-visuals" role="radiogroup" aria-label="Visuals"></div></div>
+        <label>Topic<input id="inp-topic" maxlength="400" placeholder="Where shall we begin?"></label>
+        <div class="row two"><label>Who speaks first<select id="sel-opener" class="precall"><option value="claude">Claude</option><option value="codex" disabled>Astra</option><option value="user">Me</option></select></label><label>Pause before reply<select id="sel-silence" class="precall"><option value="1">1.0 s</option><option value="1.5" selected>1.5 s</option><option value="2">2.0 s</option><option value="2.5">2.5 s</option></select></label></div>
+      </section>
+      <section>
+        <label>Share with the agents<select id="sel-vision-source"><option value="room">Call view · everyone here</option><option value="camera">Just my camera</option></select></label>
+        <p class="fine">Only the call is shared. Your desktop and settings stay private. Choose Off below for audio and text only.</p>
+        <div class="field"><span class="lbl">Visual detail</span><div class="seg" id="seg-vision" role="radiogroup" aria-label="Visual detail shared with agents"></div><p class="fine" id="vision-hint"></p></div>
+      </section>
+      <details class="more"><summary>Camera effects &amp; resolution</summary>
+        <div class="field"><span class="lbl">Your background</span><div class="seg" id="seg-bg" role="radiogroup" aria-label="Your background"></div></div>
+        <div class="field"><span class="lbl">Camera resolution</span><div class="seg" id="seg-res" role="radiogroup" aria-label="Camera resolution"></div></div>
+      </details>
+    </div>
+    <div id="settings-streaming" role="tabpanel" aria-labelledby="tab-streaming" class="settings-page" hidden>
+      <section><h3>Keep the conversation</h3><p class="fine">Separate voice tracks are saved with the transcript.</p>
+        <div class="checks"><label class="check inline"><input type="checkbox" id="chk-rec-camera" class="precall" checked> Raw camera</label><label class="check inline"><input type="checkbox" id="chk-rec-stage" class="precall" checked> Full frame</label></div>
+      </section>
+      <div id="broadcast-mount"></div>
+      <section id="recovery" hidden><span class="lbl">Unsaved recordings</span><ul id="recovery-list"></ul></section>
+    </div>
   </div>
 </aside>
 

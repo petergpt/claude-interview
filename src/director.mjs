@@ -18,6 +18,8 @@ export const SCENE_STYLES = {
   riso: { name: 'Riso', background: '#f3eee4', ink: '#1f3fb3', accent: '#ff4f7a', text: '#1d2a55', font: '"Helvetica Neue", Arial, sans-serif', feel: 'two-colour risograph print: flat bold shapes, halftone dots, slight misregistration, graphic and playful' },
 };
 
+export const CODEX_STYLE = { name: 'Astra blue storybook', background: '#d9e5fa', ink: '#202d68', accent: '#527bec', text: '#202d68', font: SERIF, feel: 'a blue and periwinkle coloured-pencil storybook: soft cloud shapes, paper grain, fine indigo outlines, warm cream light, generous quiet space and tiny unexpected details at the edges' };
+
 const clean = s => String(s ?? '').replace(/[\u0000-\u001f]/g, ' ').slice(0, 80);
 
 // Incremental parser for "header\n---\ncode". Returns {header, code, done} as text arrives.
@@ -71,12 +73,14 @@ export function checkSceneCode(code) {
   return code;
 }
 
+// Dimensions are read-only accessors: generated setup() functions sometimes reassign W/H.
+// Ignore those assignments without aborting setup or changing the host canvas.
 // The sandboxed host page for one scene. It draws into an OffscreenCanvas and posts ImageBitmaps to the
 // studio page, which composites them into the recorded frame. The frame has an opaque origin and no network.
 export function sceneFrameHTML({ code, style, width = 888, height = 852 }) {
   const safe = s => s.replace(/<\/script/gi, '<\\/script');
   return `<!doctype html><meta charset="utf-8"><title>scene</title>
-<script>const W=${width},H=${height};const STYLE=${safe(JSON.stringify(style))};
+<script>Object.defineProperties(globalThis,{W:{get:()=>${width},set:()=>{}},H:{get:()=>${height},set:()=>{}}});const STYLE=${safe(JSON.stringify(style))};
 // Generated code often slips on numbers (a NaN alpha, a negative radius). These calls throw on such values and would
 // stop the whole picture, so they are made forgiving: bad colours become transparent, bad numbers become 0.
 (()=>{const fin=v=>Number.isFinite(+v)?+v:0,G=CanvasGradient.prototype,add=G.addColorStop;

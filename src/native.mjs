@@ -32,7 +32,7 @@ function playPCM({onComplete,onError}){
 }
 export async function talk(client,options={}){
   if(process.platform!=='darwin')throw new Error('Native capture currently uses macOS AVFoundation. The local API accepts PCM from other clients.');
-  const s=await client.request('/api/sessions',{user_name:typeof options.name==='string'?options.name:undefined,voice_id:options.voice||'auto',tts_model:options.tts||'eleven_v3_conversational',topic:options.topic||'',claude_model:options.model||'',claude_effort:options.effort||''});
+  const s=await client.request('/api/sessions',{codex_enabled:options.codex===true||options.codex==='on',codex_model:options['codex-model']||undefined,codex_effort:options['codex-effort']||undefined,codex_voice_id:options['codex-voice']||undefined,user_name:typeof options.name==='string'?options.name:undefined,voice_id:options.voice||'auto',tts_model:options.tts||'eleven_v3_conversational',topic:options.topic||'',claude_model:options.model||'',claude_effort:options.effort||''});
   const api=(action,data)=>client.request(`/api/sessions/${s.id}/${action}`,data);
   const abort=new AbortController();let capture,player,playerId,closing=false,muted=false,lines,connectedResolve,finishResolve;
   const finished=new Promise(r=>finishResolve=r),connected=new Promise(r=>connectedResolve=r);
@@ -45,15 +45,16 @@ export async function talk(client,options={}){
   const onError=e=>{console.error(e.message);void close();};
   const stream=client.events(s.id,async e=>{
     if(e.type==='connected')connectedResolve();
-    if(e.type==='model')console.log(`Claude model: ${e.model}`);
+    if(e.type==='model')console.log(`${e.speaker==='codex'?'Codex':'Claude'} model: ${e.model}`);
     if(e.type==='voice')console.log(`Voice chosen by Claude: ${e.voice.name}\n${e.voice.rationale}`);
     if(e.type==='user-turn')console.log(`\n${options.name||'You'}: ${e.turn.text}`);
-    if(e.type==='turn-start'){await stopPlayer();playerId=e.turn_id;process.stdout.write('\nClaude: ');}
+    if(e.type==='turn-start'){await stopPlayer();playerId=e.turn_id;process.stdout.write(`\n${e.speaker==='codex'?'Codex':'Claude'}: `);}
     if(e.type==='text')process.stdout.write(e.delta);
     if(e.type==='audio'&&e.turn_id===playerId){
       if(!player){const id=playerId;player=playPCM({onComplete:seconds=>{if(playerId===id){player=null;playerId=null;}void safe(api('event',{type:'playback-complete',turn_id:id,played_seconds:seconds,source:'ffplay-exited-successfully'}));},onError});}
       player.write(Buffer.from(e.audio,'base64'));
     }
+    if(e.type==='turn-skipped'&&e.turn_id===playerId){playerId=null;process.stdout.write('[listening]\n');}
     if(e.type==='turn-done'&&e.turn_id===playerId){process.stdout.write('\n');player?.end();}
     if(e.type==='interrupted'&&(!e.turn_id||e.turn_id===playerId)){await stopPlayer();console.log('\n[interrupted]');}
     if(e.type==='error')onError(new Error(e.message));

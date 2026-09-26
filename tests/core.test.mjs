@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { claudeAuthMode,subscriptionEnvironment,isSubscription,SpeechChunks,wavHeader,historyForClaude,allowRequest } from '../src/core.mjs';
+import { claudeAuthMode,subscriptionEnvironment,isSubscription,SpeechChunks,wavHeader,historyForConversation,heardSpeech,allowRequest } from '../src/core.mjs';
+import { conversationContext } from '../src/conversation.mjs';
 import { claudeArgs,runVerifiedClaude } from '../src/claude.mjs';
 import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
@@ -35,8 +36,8 @@ test('WAV header describes clean mono 24 kHz PCM',()=>{
   const h=wavHeader(48000);assert.equal(h.readUInt32LE(4),48036);assert.equal(h.readUInt16LE(22),1);assert.equal(h.readUInt32LE(24),24000);assert.equal(h.readUInt32LE(40),48000);
 });
 test('interrupted context distinguishes generated from heard',()=>{
-  const data=historyForClaude([{id:'a',speaker:'claude',text:'An answer',status:'interrupted',audio_seconds:12,played_seconds:3}])[0];
-  assert.equal(data.played_audio_seconds,3);assert.match(data.delivery_note,/may not have heard/);
+  const data=historyForConversation([{id:'a',speaker:'claude',text:'An answer',status:'interrupted',audio_seconds:12,played_seconds:3}])[0];
+  assert.equal(data.played_audio_seconds,3);assert.equal(data.text,'');assert.match(data.delivery_note,/exact words are unavailable/);
 });
 test('local server rejects other origins and rebinding hosts',()=>{
   assert.equal(allowRequest({headers:{host:'127.0.0.1:4318',origin:'http://127.0.0.1:4318'}},4318),true);
@@ -60,6 +61,30 @@ test('abort stops a running Claude process',async()=>{
   const controller=new AbortController();const result=runVerifiedClaude({prompt:'hi',system:'test',signal:controller.signal,spawnProcess:()=>childFor([],{hang:true})});
   controller.abort();await assert.rejects(result,/Interrupted|code 143/);
 });
+test('Claude resumes its own session with a stable system prompt and never speaks thinking or replayed answers', async () => {
+  const session = { id: '11111111-1111-4111-8111-111111111111', cwd: '/call/claude' };
+  let args, options, seen; const spoken = [];
+  await runVerifiedClaude({ prompt: 'Next room update', system: 'Current instructions', session, onSession: id => { seen = id; }, onText: text => spoken.push(text),
+    spawnProcess: (_, a, o) => { args = a; options = o; return childFor([
+      { type: 'system', subtype: 'init', session_id: session.id, model: 'claude-opus-5-5' },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Private history' }, { type: 'text', text: 'Old answer' }] } },
+      { type: 'stream_event', event: { delta: { type: 'thinking_delta', thinking: 'Private current thought' } } },
+      { type: 'stream_event', event: { delta: { type: 'text_delta', text: 'New answer.' } } },
+      { type: 'result', result: 'New answer.', is_error: false },
+    ]); } });
+  assert.equal(args[args.indexOf('--resume') + 1], session.id); assert.ok(!args.includes('--no-session-persistence'));
+  assert.equal(args[args.indexOf('--system-prompt-snapshot') + 1], 'on'); assert.equal(options.cwd, session.cwd);
+  assert.equal(seen, session.id); assert.deepEqual(spoken, ['New answer.']);
+});
+test('persistent Claude cancellation waits for the child to close before it can be resumed', async () => {
+  const controller = new AbortController(), child = childFor([], { hang: true }); let killed = false, settled = false;
+  child.kill = () => { killed = true; };
+  const result = runVerifiedClaude({ prompt: 'hi', system: 't', session: { cwd: '/room' }, signal: controller.signal, spawnProcess: () => child });
+  const rejection = assert.rejects(result, { name: 'AbortError' }).then(() => { settled = true; });
+  controller.abort(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(killed, true); assert.equal(settled, false);
+  child.exitCode = 143; child.emit('close', 143); await rejection;
+});
 test('API-key mode passes only ANTHROPIC_API_KEY through; gateway overrides are still removed',()=>{
   const source={PATH:'/bin',INTERVIEW_CLAUDE_AUTH:'api',ANTHROPIC_API_KEY:'sk-ant-test',ANTHROPIC_BASE_URL:'gateway',ANTHROPIC_AUTH_TOKEN:'x',ELEVENLABS_API_KEY:'secret',X_STREAM_KEY:'secret'};
   assert.equal(claudeAuthMode(source),'api');assert.equal(claudeAuthMode({}),'subscription');
@@ -76,4 +101,51 @@ test('images switch Claude to streaming input: one JSON user message with labell
   assert.equal(result.text,'I see it.');
   let plainArgs;await runVerifiedClaude({prompt:'hi',system:'t',spawnProcess:(b,a)=>{plainArgs=a;return childFor([{type:'result',result:'ok',is_error:false}]);}});
   assert.ok(!plainArgs.includes('--input-format'),'calls without images are unchanged');
+});
+
+test('shared history distinguishes prior visual observations from replies with no images',()=>{
+  const history=historyForConversation([
+    {id:'saw',speaker:'codex',text:'The card says 5837.',status:'delivered',seen:[{file:'private-path.jpg',at_ms:1200,source:'camera'}]},
+    {id:'blind',speaker:'claude',text:'I have no current image.',status:'delivered'},
+  ]);
+  assert.deepEqual(history[0].visual_context,{frames:1,source:'camera',captured_at_ms:[1200]});
+  assert.deepEqual(history[1].visual_context,{frames:0});
+  assert.ok(!JSON.stringify(history).includes('private-path'),'the shared transcript needs provenance, not disk paths');
+});
+
+test('both agents share only heard words, while the gated listener can prepare against the full current reply',()=>{
+  const turns=[
+    {id:'human',speaker:'user',text:'Keep the budget under twenty pounds.'},
+    {id:'cut',speaker:'claude',text:'Use a telescope. The secret code is 9274.',heard_text:'Use a telescope.',status:'interrupted',played_seconds:1},
+    {id:'failed',speaker:'codex',text:'This never played.',status:'error'},
+    {id:'playing',speaker:'codex',text:'We could use binoculars instead.',status:'thinking'},
+  ];
+  const ordinary=historyForConversation(turns),prepared=historyForConversation(turns,{expectedTurnId:'playing'});
+  assert.equal(ordinary[1].text,'Use a telescope.');assert.equal(ordinary[2].text,'');assert.equal(ordinary[3].text,'');
+  assert.equal(prepared[3].text,'We could use binoculars instead.');assert.match(prepared[3].delivery_note,/must finish/);
+  assert.ok(!JSON.stringify(prepared).includes('9274'));assert.ok(!JSON.stringify(prepared).includes('never played'));
+  assert.equal(turns[1].text,'Use a telescope. The secret code is 9274.','the archived output stays intact');
+});
+
+test('playback alignment produces whole words and never leaks an unfinished voice cue',()=>{
+  const raw='[curious] One small step.';
+  const alignment=[...raw].map((ch,i)=>({ch,end:(i+1)/10}));
+  assert.equal(heardSpeech(alignment,.4),'');
+  assert.equal(heardSpeech(alignment,1.6),'One');
+  assert.equal(heardSpeech(alignment,2),'One small');
+  assert.equal(heardSpeech(alignment,99),'One small step.');
+});
+
+test('long calls retain the opening request and recent turns in a shared bounded window without changing the archive',()=>{
+  const turns=[{speaker:'user',text:'Plan a quiet observatory for our village.'},...Array.from({length:1200},(_,i)=>({id:String(i),speaker:i%2?'codex':'claude',text:`Point ${i}: ${'a useful observation '.repeat(20)}`,status:'delivered'}))];
+  const before=JSON.stringify(turns),context=conversationContext(turns);
+  assert.ok(JSON.stringify(context).length<121000);assert.match(context.context_note,/earlier turns/);
+  assert.equal(context.conversation[0].text,turns[0].text);assert.equal(context.conversation.at(-1).text,turns.at(-1).text);
+  assert.equal(JSON.stringify(turns),before);assert.deepEqual(conversationContext(turns),context);
+});
+
+test('a short opening sentence reaches speech synthesis before the model finishes the next sentence',()=>{
+  const chunks=new SpeechChunks();
+  assert.deepEqual(chunks.add('I would start with binoculars. Then we can'),['I would start with binoculars.']);
+  assert.equal(chunks.add(' decide on a telescope.',true).join(''),' Then we can decide on a telescope.');
 });
